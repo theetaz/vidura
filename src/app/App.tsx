@@ -1,4 +1,12 @@
-import { type ChangeEvent, type FormEvent, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BadgeCheckIcon,
   BellIcon,
@@ -6,10 +14,11 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CirclePlayIcon,
+  ClockIcon,
+  Trash2Icon,
   DownloadIcon,
   FilterIcon,
   HomeIcon,
-  LanguagesIcon,
   LinkIcon,
   ListVideoIcon,
   MenuIcon,
@@ -83,22 +92,24 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/features/auth/use-auth";
 import {
   createVideoJob,
-  mapCreatedVideoToLibraryVideo,
+  deleteVideo,
+  fetchChatMessages,
+  fetchLibraryVideos,
+  fetchVideoTranscript,
+  sendVideoChatMessage,
   processVideoJob,
+  videoQueryKeys,
+  type LibraryVideo,
 } from "@/features/videos/api";
+import { useVideoRealtime } from "@/features/videos/use-video-realtime";
 import {
-  categories,
   languageOptions,
-  learningStats,
-  processingSteps,
   quickPrompts,
-  type ChatMessage,
   type TranscriptSegment,
 } from "@/features/videos/data";
 import { hasSupabaseConfig } from "@/lib/supabase";
 import { parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
-import { createLocalVideoReply } from "@/lib/video-chat";
 import {
   buildYouTubeEmbedUrl,
   buildYouTubeWatchUrl,
@@ -125,8 +136,6 @@ const navItems: Array<{
   { view: "settings", label: "Settings", Icon: SettingsIcon },
 ];
 
-const emptyChatMessages: ChatMessage[] = [];
-
 function App() {
   return (
     <TooltipProvider>
@@ -135,9 +144,37 @@ function App() {
   );
 }
 
+function titleCase(value: string) {
+  return value.replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function ViduraApp() {
   const currentView = useAppStore((state) => state.currentView);
+  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const setSelectedVideoId = useAppStore((state) => state.setSelectedVideoId);
   const auth = useAuth();
+  const videosQuery = useLibraryVideos(auth.configured && Boolean(auth.session));
+
+  useVideoRealtime(auth.configured && Boolean(auth.session));
+
+  useEffect(() => {
+    if (!videosQuery.data) {
+      return;
+    }
+
+    if (videosQuery.data.length === 0) {
+      setSelectedVideoId(null);
+      return;
+    }
+
+    const selectedVideoStillExists = videosQuery.data.some(
+      (video) => video.id === selectedVideoId,
+    );
+
+    if (!selectedVideoStillExists) {
+      setSelectedVideoId(videosQuery.data[0].id);
+    }
+  }, [selectedVideoId, setSelectedVideoId, videosQuery.data]);
 
   if (auth.loading) {
     return <LoadingScreen />;
@@ -153,10 +190,10 @@ function ViduraApp() {
         <DesktopSidebar />
         <main className="min-w-0 flex-1 px-4 pb-36 pt-4 sm:px-6 lg:px-6 lg:pb-7 xl:px-7">
           <TopBar />
-          {currentView === "library" ? <LibraryScreen /> : null}
+          {currentView === "library" ? <LibraryScreen videos={videosQuery.data ?? []} isPending={videosQuery.isPending} error={videosQuery.error} /> : null}
           {currentView === "add" ? <AddVideoScreen /> : null}
-          {currentView === "watch" ? <WatchScreen /> : null}
-          {currentView === "chat" ? <ChatScreen standalone /> : null}
+          {currentView === "watch" ? <WatchScreen videos={videosQuery.data ?? []} /> : null}
+          {currentView === "chat" ? <ChatScreen standalone videos={videosQuery.data ?? []} /> : null}
           {currentView === "settings" ? <SettingsScreen /> : null}
         </main>
         {auth.configured ? (
@@ -173,6 +210,14 @@ function ViduraApp() {
       </div>
     </div>
   );
+}
+
+function useLibraryVideos(enabled: boolean) {
+  return useQuery({
+    queryKey: videoQueryKeys.all,
+    queryFn: fetchLibraryVideos,
+    enabled,
+  });
 }
 
 function LoadingScreen() {
@@ -377,13 +422,12 @@ function DesktopSidebar() {
             <div>
               <p className="text-sm font-black leading-none">Level 3</p>
               <p className="text-[0.68rem] font-bold text-foreground/55">
-                Study pulse
+                Study sync
               </p>
             </div>
           </div>
-          <Progress className="h-2 border border-foreground" value={64} />
           <p className="mt-2 text-xs font-semibold leading-snug text-foreground/65">
-            3 videos processed this week.
+            Library updates live from Supabase.
           </p>
         </div>
       </div>
@@ -418,16 +462,48 @@ function MobileNav() {
   );
 }
 
-function LibraryScreen() {
+function LibraryScreen({
+  videos,
+  isPending,
+  error,
+}: {
+  videos: LibraryVideo[];
+  isPending: boolean;
+  error: Error | null;
+}) {
   const [category, setCategory] = useState("All");
-  const libraryVideos = useAppStore((state) => state.libraryVideos);
   const selectVideo = useAppStore((state) => state.selectVideo);
+  const queryClient = useQueryClient();
+  const deleteVideoMutation = useMutation({
+    mutationFn: deleteVideo,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
+    },
+  });
   const filteredVideos = useMemo(
     () =>
       category === "All"
-        ? libraryVideos
-        : libraryVideos.filter((video) => video.category === category),
-    [category, libraryVideos]
+        ? videos
+        : videos.filter((video) => video.category === category),
+    [category, videos]
+  );
+  const categoryOptions = useMemo(
+    () => ["All", ...Array.from(new Set(videos.map((video) => video.category)))],
+    [videos],
+  );
+  const learningStats = useMemo(
+    () => [
+      { label: "Videos processed", value: videos.length.toString() },
+      {
+        label: "Ready",
+        value: videos.filter((video) => video.status === "ready").length.toString(),
+      },
+      {
+        label: "Processing",
+        value: videos.filter((video) => video.status !== "ready").length.toString(),
+      },
+    ],
+    [videos],
   );
 
   return (
@@ -451,7 +527,7 @@ function LibraryScreen() {
           type="single"
           value={category}
         >
-          {categories.map((item) => (
+          {categoryOptions.map((item) => (
             <ToggleGroupItem
               className="rounded-md border-2 border-foreground bg-card data-[state=on]:bg-vidura-mint"
               key={item}
@@ -468,6 +544,28 @@ function LibraryScreen() {
 
       <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
         <div className="flex flex-col gap-3">
+          {isPending ? (
+            <StickerCard>
+              <CardContent className="p-4 font-black">Loading videos...</CardContent>
+            </StickerCard>
+          ) : null}
+          {error ? (
+            <StickerCard className="bg-vidura-coral">
+              <CardContent className="p-4 font-black">
+                Could not load library: {error.message}
+              </CardContent>
+            </StickerCard>
+          ) : null}
+          {!isPending && !error && filteredVideos.length === 0 ? (
+            <StickerCard>
+              <CardContent className="p-5">
+                <h3 className="font-display text-3xl font-black">No videos yet</h3>
+                <p className="mt-1 text-sm font-semibold text-foreground/60">
+                  Add a YouTube link to start your first Sinhala study session.
+                </p>
+              </CardContent>
+            </StickerCard>
+          ) : null}
           {filteredVideos.map((video) => (
             <StickerCard
               className="cursor-pointer transition-transform hover:-translate-y-0.5"
@@ -509,17 +607,27 @@ function LibraryScreen() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuGroup>
-                          <DropdownMenuItem>Open video</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => selectVideo(video.id)}>
+                            Open video
+                          </DropdownMenuItem>
                           <DropdownMenuItem>Download subtitles</DropdownMenuItem>
-                          <DropdownMenuItem>Add to watch later</DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => deleteVideoMutation.mutate(video.id)}
+                          >
+                            Delete video
+                          </DropdownMenuItem>
                         </DropdownMenuGroup>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-foreground/65">
                     <Badge variant="secondary">{video.category}</Badge>
-                    <span>EN</span>
-                    <span>SI subtitles</span>
+                    <span>{video.latestJob?.status ?? video.status}</span>
+                    <span>
+                      {(video.latestJob?.metadata.stage as string | undefined) ??
+                        "created"}
+                    </span>
                   </div>
                 </div>
                 <Badge
@@ -592,11 +700,10 @@ function AddVideoScreen() {
     TranscriptSegment[]
   >([]);
   const [transcriptError, setTranscriptError] = useState("");
-  const addVideo = useAppStore((state) => state.addVideo);
-  const setTranscriptSegments = useAppStore(
-    (state) => state.setTranscriptSegments,
-  );
+  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const setSelectedVideoId = useAppStore((state) => state.setSelectedVideoId);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const queryClient = useQueryClient();
 
   async function handleStartProcessing(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -611,47 +718,26 @@ function AddVideoScreen() {
     setIsSubmitting(true);
 
     try {
-      if (hasSupabaseConfig) {
-        const response = await createVideoJob({
-          youtubeUrl: parsedUrl.canonicalUrl,
+      const response = await createVideoJob({
+        youtubeUrl: parsedUrl.canonicalUrl,
+        targetLanguage: "si-LK",
+      });
+
+      setSelectedVideoId(response.video.id);
+      await queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
+
+      if (transcriptSegments.length > 0) {
+        void processVideoJob({
+          jobId: response.job.id,
           targetLanguage: "si-LK",
+          segments: transcriptSegments,
+        }).catch((processError) => {
+          setTranscriptError(
+            processError instanceof Error
+              ? processError.message
+              : "Backend translation did not start.",
+          );
         });
-        const importedVideo = mapCreatedVideoToLibraryVideo(response);
-        addVideo(importedVideo);
-        if (transcriptSegments.length > 0) {
-          setTranscriptSegments(importedVideo.id, transcriptSegments);
-          try {
-            await processVideoJob({
-              jobId: response.job.id,
-              targetLanguage: "si-LK",
-              segments: transcriptSegments,
-            });
-          } catch (processError) {
-            setTranscriptError(
-              processError instanceof Error
-                ? processError.message
-                : "Backend translation did not start.",
-            );
-          }
-        }
-      } else {
-        const importedVideo = {
-          id: `youtube-${parsedUrl.videoId}`,
-          youtubeVideoId: parsedUrl.videoId,
-          youtubeUrl: parsedUrl.canonicalUrl,
-          title: `YouTube lesson ${parsedUrl.videoId}`,
-          channel: "Pending transcript import",
-          category: "Imported",
-          duration: "--:--",
-          progress: "Queued",
-          status: "queued" as const,
-          accent: "bg-vidura-sky",
-          Icon: LanguagesIcon,
-        };
-        addVideo(importedVideo);
-        if (transcriptSegments.length > 0) {
-          setTranscriptSegments(importedVideo.id, transcriptSegments);
-        }
       }
 
       setUrlError("");
@@ -710,7 +796,12 @@ function AddVideoScreen() {
   }
 
   if (isProcessing) {
-    return <ProcessingScreen onOpenWatch={() => setCurrentView("watch")} />;
+    return (
+      <ProcessingScreen
+        onOpenWatch={() => setCurrentView("watch")}
+        videoId={selectedVideoId}
+      />
+    );
   }
 
   return (
@@ -844,40 +935,70 @@ function AddVideoScreen() {
   );
 }
 
-function ProcessingScreen({ onOpenWatch }: { onOpenWatch: () => void }) {
+function ProcessingScreen({
+  onOpenWatch,
+  videoId,
+}: {
+  onOpenWatch: () => void;
+  videoId: string | null;
+}) {
+  const videosQuery = useLibraryVideos(Boolean(videoId));
+  const video = videosQuery.data?.find((item) => item.id === videoId) ?? null;
+  const job = video?.latestJob ?? null;
+  const stage = typeof job?.metadata.stage === "string"
+    ? job.metadata.stage
+    : job?.status ?? "queued";
+  const totalSegments = Number(job?.metadata.total_segments ?? 0);
+  const translatedSegments = Number(job?.metadata.translated_segments ?? 0);
+  const currentSegmentText =
+    typeof job?.metadata.current_segment_text === "string"
+      ? job.metadata.current_segment_text
+      : null;
+
   return (
     <section className="mx-auto grid max-w-5xl gap-4 lg:grid-cols-[1fr_340px]">
       <StickerPanel
-        description="Quantum Physics Explained - Simply and Visually"
+        description={video?.title ?? "Waiting for the new video job"}
         title="Processing"
       >
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-3">
-            {processingSteps.map((step, index) => (
-              <div className="flex items-center gap-3" key={step.label}>
-                <div
-                  className={cn(
-                    "grid size-10 place-items-center rounded-full border-2 border-foreground font-black",
-                    step.state === "complete" && "bg-vidura-mint",
-                    step.state === "active" && "bg-vidura-sun",
-                    step.state === "pending" && "bg-card"
-                  )}
-                >
-                  {step.state === "complete" ? <CheckIcon /> : index + 1}
-                </div>
-                <div className="flex-1">
-                  <p className="font-black">{step.label}</p>
-                  {step.state === "active" ? (
-                    <Progress className="mt-2 h-3 border border-foreground" value={72} />
-                  ) : null}
-                </div>
-                {step.state === "active" ? (
-                  <Badge className="border-2 border-foreground bg-vidura-sun text-foreground">
-                    72%
-                  </Badge>
-                ) : null}
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-full border-2 border-foreground bg-vidura-sun font-black">
+                {job?.status === "ready" ? <CheckIcon /> : <ClockIcon />}
               </div>
-            ))}
+              <div className="flex-1">
+                <p className="font-black">{titleCase(stage.replaceAll("_", " "))}</p>
+                <Progress
+                  className="mt-2 h-3 border border-foreground"
+                  value={job?.progress ?? 0}
+                />
+              </div>
+              <Badge className="border-2 border-foreground bg-vidura-sun text-foreground">
+                {job?.progress ?? 0}%
+              </Badge>
+            </div>
+            {totalSegments > 0 ? (
+              <StickerCard className="bg-vidura-cream">
+                <CardContent className="p-4">
+                  <p className="font-black">
+                    Translating {translatedSegments} of {totalSegments} segments
+                  </p>
+                  {currentSegmentText ? (
+                    <p className="mt-2 text-sm font-semibold text-foreground/65">
+                      Current: {currentSegmentText}
+                    </p>
+                  ) : null}
+                </CardContent>
+              </StickerCard>
+            ) : null}
+            {job?.errorMessage ? (
+              <StickerCard className="bg-vidura-coral">
+                <CardContent className="p-4 text-sm font-black">
+                  {job.errorMessage}
+                </CardContent>
+              </StickerCard>
+            ) : null}
           </div>
           <StickerCard className="bg-vidura-sky">
             <CardContent className="flex items-center gap-3 p-4">
@@ -888,7 +1009,7 @@ function ProcessingScreen({ onOpenWatch }: { onOpenWatch: () => void }) {
             </CardContent>
           </StickerCard>
           <CartoonButton onClick={onOpenWatch}>
-            Preview watch screen
+            Open watch screen
             <CirclePlayIcon data-icon="inline-end" />
           </CartoonButton>
         </div>
@@ -901,24 +1022,37 @@ function ProcessingScreen({ onOpenWatch }: { onOpenWatch: () => void }) {
   );
 }
 
-function WatchScreen() {
+function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const subtitleEnabled = useAppStore((state) => state.subtitleEnabled);
   const subtitleSize = useAppStore((state) => state.subtitleSize);
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
-  const selectedVideo = useAppStore((state) => state.selectedVideo);
-  const getTranscriptSegments = useAppStore(
-    (state) => state.getTranscriptSegments,
-  );
-  const selectedTranscript = useAppStore(
-    (state) =>
-      state.transcriptSegmentsByVideo[selectedVideo.id] ??
-      getTranscriptSegments(selectedVideo.id),
-  );
+  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const selectedVideo =
+    videos.find((video) => video.id === selectedVideoId) ?? videos[0] ?? null;
+  const transcriptQuery = useQuery({
+    queryKey: videoQueryKeys.transcript(selectedVideo?.id ?? null),
+    queryFn: () => fetchVideoTranscript(selectedVideo?.id ?? null),
+    enabled: Boolean(selectedVideo),
+  });
+  const selectedTranscript = transcriptQuery.data ?? [];
   const activeSubtitle = selectedTranscript[1] ?? selectedTranscript[0];
-  const embedUrl = isYouTubeVideoId(selectedVideo.youtubeVideoId)
+  const embedUrl = isYouTubeVideoId(selectedVideo?.youtubeVideoId)
     ? buildYouTubeEmbedUrl(selectedVideo.youtubeVideoId)
     : null;
+
+  if (!selectedVideo) {
+    return (
+      <StickerCard>
+        <CardContent className="p-5">
+          <h2 className="font-display text-3xl font-black">No video selected</h2>
+          <p className="mt-1 text-sm font-semibold text-foreground/60">
+            Add a video or open one from the library.
+          </p>
+        </CardContent>
+      </StickerCard>
+    );
+  }
 
   return (
     <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -994,31 +1128,27 @@ function WatchScreen() {
           </div>
         </StickerCard>
         <div className="grid gap-4 xl:hidden">
-          <TranscriptPanel />
-          <ChatPanel />
+          <TranscriptPanel videoId={selectedVideo.id} />
+          <ChatPanel videoId={selectedVideo.id} />
         </div>
         <div className="hidden xl:block">
-          <TranscriptPanel />
+          <TranscriptPanel videoId={selectedVideo.id} />
         </div>
       </div>
       <aside className="hidden min-h-0 flex-col gap-4 xl:flex">
-        <ChatPanel />
-        <VideoInfoPanel />
+        <ChatPanel videoId={selectedVideo.id} />
+        <VideoInfoPanel video={selectedVideo} />
       </aside>
     </section>
   );
 }
 
-function TranscriptPanel() {
-  const selectedVideo = useAppStore((state) => state.selectedVideo);
-  const getTranscriptSegments = useAppStore(
-    (state) => state.getTranscriptSegments,
-  );
-  const selectedTranscript = useAppStore(
-    (state) =>
-      state.transcriptSegmentsByVideo[selectedVideo.id] ??
-      getTranscriptSegments(selectedVideo.id),
-  );
+function TranscriptPanel({ videoId }: { videoId: string }) {
+  const transcriptQuery = useQuery({
+    queryKey: videoQueryKeys.transcript(videoId),
+    queryFn: () => fetchVideoTranscript(videoId),
+  });
+  const selectedTranscript = transcriptQuery.data ?? [];
 
   return (
     <StickerCard>
@@ -1035,6 +1165,16 @@ function TranscriptPanel() {
           </div>
         </CardHeader>
         <CardContent>
+          {transcriptQuery.isPending ? (
+            <p className="text-sm font-black text-foreground/60">
+              Loading transcript...
+            </p>
+          ) : null}
+          {!transcriptQuery.isPending && selectedTranscript.length === 0 ? (
+            <p className="text-sm font-black text-foreground/60">
+              Transcript lines will appear here as processing stores them.
+            </p>
+          ) : null}
           <TabsContent className="mt-0" value="sinhala">
             <TranscriptRows mode="sinhala" segments={selectedTranscript} />
           </TabsContent>
@@ -1088,22 +1228,27 @@ function TranscriptRows({
   );
 }
 
-function ChatPanel() {
-  const messageCounterRef = useRef(0);
+function ChatPanel({ videoId }: { videoId: string }) {
   const [draft, setDraft] = useState("");
-  const selectedVideo = useAppStore((state) => state.selectedVideo);
-  const getTranscriptSegments = useAppStore(
-    (state) => state.getTranscriptSegments,
-  );
-  const addChatExchange = useAppStore((state) => state.addChatExchange);
-  const messages = useAppStore(
-    (state) => state.chatMessagesByVideo[selectedVideo.id] ?? emptyChatMessages,
-  );
-  const selectedTranscript = useAppStore(
-    (state) =>
-      state.transcriptSegmentsByVideo[selectedVideo.id] ??
-      getTranscriptSegments(selectedVideo.id),
-  );
+  const queryClient = useQueryClient();
+  const transcriptQuery = useQuery({
+    queryKey: videoQueryKeys.transcript(videoId),
+    queryFn: () => fetchVideoTranscript(videoId),
+  });
+  const chatQuery = useQuery({
+    queryKey: videoQueryKeys.chat(videoId),
+    queryFn: () => fetchChatMessages(videoId),
+  });
+  const sendMessageMutation = useMutation({
+    mutationFn: sendVideoChatMessage,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: videoQueryKeys.chat(videoId),
+      });
+    },
+  });
+  const messages = chatQuery.data ?? [];
+  const selectedTranscript = transcriptQuery.data ?? [];
 
   function askVideo(question: string) {
     const trimmedQuestion = question.trim();
@@ -1112,24 +1257,11 @@ function ChatPanel() {
       return;
     }
 
-    const reply = createLocalVideoReply(trimmedQuestion, selectedTranscript);
-    messageCounterRef.current += 1;
-    const messageId = `${selectedVideo.id}-${messageCounterRef.current}`;
-
-    addChatExchange(
-      selectedVideo.id,
-      {
-        id: `user-${messageId}`,
-        role: "user",
-        content: trimmedQuestion,
-      },
-      {
-        id: `assistant-${messageId}`,
-        role: "assistant",
-        content: reply.content,
-        citation: reply.citation,
-      },
-    );
+    sendMessageMutation.mutate({
+      videoId,
+      question: trimmedQuestion,
+      transcript: selectedTranscript,
+    });
     setDraft("");
   }
 
@@ -1171,7 +1303,12 @@ function ChatPanel() {
         </div>
         <ScrollArea className="h-[230px] pr-3">
           <div className="flex flex-col gap-3">
-            {messages.length === 0 ? (
+            {chatQuery.isPending ? (
+              <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-3 text-sm font-bold leading-relaxed text-foreground/65">
+                Loading chat...
+              </div>
+            ) : null}
+            {!chatQuery.isPending && messages.length === 0 ? (
               <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-3 text-sm font-bold leading-relaxed text-foreground/65">
                 Ask a question after importing or selecting a video transcript.
               </div>
@@ -1207,7 +1344,7 @@ function ChatPanel() {
             <InputGroupAddon align="inline-end">
               <InputGroupButton
                 className="bg-vidura-purple text-foreground"
-                disabled={!draft.trim()}
+                disabled={!draft.trim() || sendMessageMutation.isPending}
                 size="icon-sm"
                 type="submit"
               >
@@ -1222,20 +1359,46 @@ function ChatPanel() {
   );
 }
 
-function ChatScreen({ standalone = false }: { standalone?: boolean }) {
+function ChatScreen({
+  standalone = false,
+  videos,
+}: {
+  standalone?: boolean;
+  videos: LibraryVideo[];
+}) {
+  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const selectedVideo =
+    videos.find((video) => video.id === selectedVideoId) ?? videos[0] ?? null;
+
   return (
     <section className={cn("mx-auto max-w-3xl", standalone && "pt-0")}>
-      <ChatPanel />
+      {selectedVideo ? (
+        <ChatPanel videoId={selectedVideo.id} />
+      ) : (
+        <StickerCard>
+          <CardContent className="p-5 font-black">
+            Add a video before starting a chat.
+          </CardContent>
+        </StickerCard>
+      )}
     </section>
   );
 }
 
-function VideoInfoPanel() {
-  const selectedVideo = useAppStore((state) => state.selectedVideo);
+function VideoInfoPanel({ video }: { video: LibraryVideo }) {
+  const queryClient = useQueryClient();
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const deleteVideoMutation = useMutation({
+    mutationFn: deleteVideo,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
+      setCurrentView("library");
+    },
+  });
   const videoUrl =
-    selectedVideo.youtubeUrl ??
-    (isYouTubeVideoId(selectedVideo.youtubeVideoId)
-      ? buildYouTubeWatchUrl(selectedVideo.youtubeVideoId)
+    video.youtubeUrl ??
+    (isYouTubeVideoId(video.youtubeVideoId)
+      ? buildYouTubeWatchUrl(video.youtubeVideoId)
       : null);
 
   async function shareVideo() {
@@ -1246,7 +1409,7 @@ function VideoInfoPanel() {
     try {
       if (navigator.share) {
         await navigator.share({
-          title: selectedVideo.title,
+          title: video.title,
           url: videoUrl,
         });
         return;
@@ -1272,15 +1435,15 @@ function VideoInfoPanel() {
         <div
           className={cn(
             "grid size-20 shrink-0 place-items-center rounded-md border-2 border-foreground",
-            selectedVideo.accent
+            video.accent
           )}
         >
-          <selectedVideo.Icon className="size-9" />
+          <video.Icon className="size-9" />
         </div>
         <div>
-          <p className="font-black leading-tight">{selectedVideo.title}</p>
+          <p className="font-black leading-tight">{video.title}</p>
           <p className="mt-1 text-xs font-semibold text-foreground/60">
-            {selectedVideo.channel}
+            {video.channel}
           </p>
         </div>
       </div>
@@ -1307,6 +1470,15 @@ function VideoInfoPanel() {
         >
           <ListVideoIcon data-icon="inline-start" />
           Open in YouTube
+        </Button>
+        <Button
+          className="justify-start border-2 border-foreground"
+          disabled={deleteVideoMutation.isPending}
+          onClick={() => deleteVideoMutation.mutate(video.id)}
+          variant="outline"
+        >
+          <Trash2Icon data-icon="inline-start" />
+          Delete video
         </Button>
       </div>
     </StickerPanel>

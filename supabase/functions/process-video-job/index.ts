@@ -38,6 +38,7 @@ type Database = {
           status?: "running" | "ready" | "failed";
           progress?: number;
           error_message?: string | null;
+          metadata?: Record<string, unknown>;
           started_at?: string;
           finished_at?: string;
         };
@@ -197,7 +198,12 @@ Deno.serve(async (request) => {
     await updateJobState(serviceClient, job.id, job.video_id, {
       jobStatus: "running",
       videoStatus: "translating",
-      progress: 20,
+      progress: 15,
+      metadata: {
+        stage: "storing_transcript",
+        total_segments: normalizedSegments.length,
+        translated_segments: 0,
+      },
     });
 
     const sourceLanguage = body.sourceLanguage ?? "en";
@@ -212,30 +218,62 @@ Deno.serve(async (request) => {
     await updateJobState(serviceClient, job.id, job.video_id, {
       jobStatus: "running",
       videoStatus: "translating",
-      progress: 45,
+      progress: 25,
+      metadata: {
+        stage: "translating",
+        total_segments: normalizedSegments.length,
+        translated_segments: 0,
+      },
     });
 
-    const translations = await translateSegments({
-      apiKey: openRouterApiKey,
-      model: openRouterModel,
-      sourceLanguage,
-      targetLanguage,
-      segments: normalizedSegments,
-    });
+    const translations: TranslationResult[] = [];
 
-    await upsertTranslatedSegments(
-      serviceClient,
-      job.video_id,
-      targetLanguage,
-      openRouterModel,
-      storedSegments,
-      translations,
-    );
+    for (const [position, segment] of normalizedSegments.entries()) {
+      await updateJobState(serviceClient, job.id, job.video_id, {
+        jobStatus: "running",
+        videoStatus: "translating",
+        progress: calculateTranslationProgress(
+          position,
+          normalizedSegments.length,
+        ),
+        metadata: {
+          stage: "translating",
+          total_segments: normalizedSegments.length,
+          translated_segments: position,
+          current_segment_index: segment.index,
+          current_segment_start_ms: segment.startMs,
+          current_segment_text: segment.text,
+        },
+      });
+
+      const translation = await translateSegment({
+        apiKey: openRouterApiKey,
+        model: openRouterModel,
+        sourceLanguage,
+        targetLanguage,
+        segment,
+      });
+
+      await upsertTranslatedSegments(
+        serviceClient,
+        job.video_id,
+        targetLanguage,
+        openRouterModel,
+        storedSegments,
+        [translation],
+      );
+      translations.push(translation);
+    }
 
     await updateJobState(serviceClient, job.id, job.video_id, {
       jobStatus: "ready",
       videoStatus: "ready",
       progress: 100,
+      metadata: {
+        stage: "ready",
+        total_segments: normalizedSegments.length,
+        translated_segments: translations.length,
+      },
     });
 
     return jsonResponse({
@@ -253,6 +291,10 @@ Deno.serve(async (request) => {
       videoStatus: "failed",
       progress: 100,
       errorMessage: message,
+      metadata: {
+        stage: "failed",
+        error: message,
+      },
     });
 
     return jsonResponse({ error: message }, 500);
@@ -293,6 +335,7 @@ async function updateJobState(
     videoStatus: "translating" | "ready" | "failed";
     progress: number;
     errorMessage?: string;
+    metadata?: Record<string, unknown>;
   },
 ) {
   const now = new Date().toISOString();
@@ -300,6 +343,7 @@ async function updateJobState(
     status: state.jobStatus,
     progress: state.progress,
     error_message: state.errorMessage ?? null,
+    metadata: state.metadata,
   };
 
   if (state.jobStatus === "running") {
@@ -352,12 +396,20 @@ async function upsertTranscriptSegments(
   return data as StoredSegment[];
 }
 
-async function translateSegments(input: {
+function calculateTranslationProgress(position: number, totalSegments: number) {
+  if (totalSegments <= 0) {
+    return 25;
+  }
+
+  return Math.min(95, 25 + Math.floor((position / totalSegments) * 70));
+}
+
+async function translateSegment(input: {
   apiKey: string;
   model: string;
   sourceLanguage: string;
   targetLanguage: string;
-  segments: ReturnType<typeof normalizeSegments>;
+  segment: ReturnType<typeof normalizeSegments>[number];
 }) {
   const response = await fetch(openRouterUrl, {
     method: "POST",
@@ -381,11 +433,11 @@ async function translateSegments(input: {
             sourceLanguage: input.sourceLanguage,
             targetLanguage: input.targetLanguage,
             instructions:
-              "Translate each segment. Keep the same index values. Return an array of objects with index and text.",
-            segments: input.segments.map((segment) => ({
-              index: segment.index,
-              text: segment.text,
-            })),
+              "Translate this segment. Keep the same index value. Return one JSON object with index and text.",
+            segment: {
+              index: input.segment.index,
+              text: input.segment.text,
+            },
           }),
         },
       ],
@@ -404,27 +456,30 @@ async function translateSegments(input: {
     throw new Error("OpenRouter returned an invalid translation response");
   }
 
-  return parseTranslationContent(content);
+  return parseTranslationContent(content, input.segment.index);
 }
 
-function parseTranslationContent(content: string): TranslationResult[] {
+function parseTranslationContent(
+  content: string,
+  fallbackIndex: number,
+): TranslationResult {
   const jsonText = content
     .trim()
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "");
   const parsed = JSON.parse(jsonText);
+  const item = Array.isArray(parsed) ? parsed[0] : parsed;
+  const index = Number.isInteger(Number(item?.index))
+    ? Number(item.index)
+    : fallbackIndex;
+  const text = String(item?.text ?? "").trim();
 
-  if (!Array.isArray(parsed)) {
-    throw new Error("Translation response was not an array");
+  if (!text) {
+    throw new Error("Translation response did not include text");
   }
 
-  return parsed
-    .map((item) => ({
-      index: Number(item.index),
-      text: String(item.text ?? "").trim(),
-    }))
-    .filter((item) => Number.isInteger(item.index) && item.text);
+  return { index, text };
 }
 
 async function upsertTranslatedSegments(

@@ -14,6 +14,7 @@
     "@fontsource-variable/geist": "^5.2.9",
     "@supabase/supabase-js": "latest",
     "@tailwindcss/vite": "latest",
+    "@tanstack/react-query": "^5.101.2",
     "@vitejs/plugin-react": "latest",
     "class-variance-authority": "latest",
     "clsx": "latest",
