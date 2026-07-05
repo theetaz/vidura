@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  BadgeCheckIcon,
   BellIcon,
   BookOpenIcon,
   CheckIcon,
@@ -123,9 +124,9 @@ function ViduraApp() {
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      <div className="mx-auto flex min-h-dvh w-full max-w-[1540px] flex-col lg:flex-row">
+      <div className="mx-auto flex min-h-dvh w-full max-w-[1760px] flex-col lg:flex-row">
         <DesktopSidebar />
-        <main className="min-w-0 flex-1 px-4 pb-36 pt-4 sm:px-6 lg:px-7 lg:pb-7">
+        <main className="min-w-0 flex-1 px-4 pb-36 pt-4 sm:px-6 lg:px-6 lg:pb-7 xl:px-7">
           <TopBar />
           {currentView === "library" ? <LibraryScreen /> : null}
           {currentView === "add" ? <AddVideoScreen /> : null}
@@ -200,28 +201,28 @@ function DesktopSidebar() {
   const setCurrentView = useAppStore((state) => state.setCurrentView);
 
   return (
-    <aside className="sticky top-0 hidden h-dvh w-[250px] shrink-0 border-r-2 border-foreground bg-background p-5 lg:block">
-      <div className="flex h-full flex-col">
-        <div className="mb-6">
-          <div className="flex items-center gap-3">
-            <div className="grid size-14 place-items-center rounded-lg border-2 border-foreground bg-vidura-sun shadow-[3px_3px_0_var(--vidura-ink)]">
+    <aside className="sticky top-0 hidden h-dvh w-[216px] shrink-0 border-r-2 border-foreground bg-background px-4 py-5 lg:block 2xl:w-[224px]">
+      <div className="flex h-full flex-col gap-5">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <div className="grid size-12 place-items-center rounded-lg border-2 border-foreground bg-vidura-sun shadow-[3px_3px_0_var(--vidura-ink)]">
               <BookOpenIcon />
             </div>
-            <div>
-              <h1 className="font-display text-4xl font-black leading-none tracking-normal">
+            <div className="min-w-0">
+              <h1 className="truncate font-display text-3xl font-black leading-none tracking-normal">
                 Vidura
               </h1>
-              <p className="text-xs font-semibold text-foreground/55">
+              <p className="truncate text-[0.72rem] font-semibold text-foreground/55">
                 Sinhala video study
               </p>
             </div>
           </div>
         </div>
-        <nav className="flex flex-col gap-2">
+        <nav className="flex flex-col gap-1.5">
           {navItems.map(({ view, label, Icon }) => (
             <Button
               className={cn(
-                "justify-start rounded-md border-2 border-transparent font-bold",
+                "h-9 justify-start rounded-md border-2 border-transparent px-2 text-sm font-black",
                 currentView === view &&
                   "border-foreground bg-vidura-mint text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint"
               )}
@@ -234,10 +235,22 @@ function DesktopSidebar() {
             </Button>
           ))}
         </nav>
-        <div className="mt-auto">
-          <MascotBubble tone="sun">
-            Level 3 learner. You processed three videos this week.
-          </MascotBubble>
+        <div className="rounded-lg border-2 border-foreground bg-card p-3 shadow-[3px_3px_0_var(--vidura-ink)]">
+          <div className="mb-2 flex items-center gap-2">
+            <div className="grid size-8 place-items-center rounded-md border-2 border-foreground bg-vidura-sun">
+              <BadgeCheckIcon />
+            </div>
+            <div>
+              <p className="text-sm font-black leading-none">Level 3</p>
+              <p className="text-[0.68rem] font-bold text-foreground/55">
+                Study pulse
+              </p>
+            </div>
+          </div>
+          <Progress className="h-2 border border-foreground" value={64} />
+          <p className="mt-2 text-xs font-semibold leading-snug text-foreground/65">
+            3 videos processed this week.
+          </p>
         </div>
       </div>
     </aside>
