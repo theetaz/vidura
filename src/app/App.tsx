@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type ChangeEvent, type FormEvent, useMemo, useRef, useState } from "react";
 import {
   BadgeCheckIcon,
   BellIcon,
@@ -92,9 +92,10 @@ import {
   learningStats,
   processingSteps,
   quickPrompts,
-  transcript,
+  type TranscriptSegment,
 } from "@/features/videos/data";
 import { hasSupabaseConfig } from "@/lib/supabase";
+import { parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import { parseYouTubeUrl } from "@/lib/youtube";
 import { useAppStore, type AppView } from "@/stores/app-store";
@@ -572,11 +573,20 @@ function SearchTools({ compact = false }: { compact?: boolean }) {
 }
 
 function AddVideoScreen() {
+  const transcriptInputRef = useRef<HTMLInputElement>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [urlError, setUrlError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [transcriptFileName, setTranscriptFileName] = useState("");
+  const [transcriptSegments, setTranscriptSegmentsState] = useState<
+    TranscriptSegment[]
+  >([]);
+  const [transcriptError, setTranscriptError] = useState("");
   const addVideo = useAppStore((state) => state.addVideo);
+  const setTranscriptSegments = useAppStore(
+    (state) => state.setTranscriptSegments,
+  );
   const setCurrentView = useAppStore((state) => state.setCurrentView);
 
   async function handleStartProcessing(event: FormEvent<HTMLFormElement>) {
@@ -597,9 +607,13 @@ function AddVideoScreen() {
           youtubeUrl: parsedUrl.canonicalUrl,
           targetLanguage: "si-LK",
         });
-        addVideo(mapCreatedVideoToLibraryVideo(response));
+        const importedVideo = mapCreatedVideoToLibraryVideo(response);
+        addVideo(importedVideo);
+        if (transcriptSegments.length > 0) {
+          setTranscriptSegments(importedVideo.id, transcriptSegments);
+        }
       } else {
-        addVideo({
+        const importedVideo = {
           id: `youtube-${parsedUrl.videoId}`,
           youtubeVideoId: parsedUrl.videoId,
           youtubeUrl: parsedUrl.canonicalUrl,
@@ -611,7 +625,11 @@ function AddVideoScreen() {
           status: "queued" as const,
           accent: "bg-vidura-sky",
           Icon: LanguagesIcon,
-        });
+        };
+        addVideo(importedVideo);
+        if (transcriptSegments.length > 0) {
+          setTranscriptSegments(importedVideo.id, transcriptSegments);
+        }
       }
 
       setUrlError("");
@@ -624,6 +642,38 @@ function AddVideoScreen() {
       );
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleTranscriptFileChange(
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const parsedTranscript = await parseTranscriptFile(file);
+
+      if (parsedTranscript.length === 0) {
+        throw new Error("No transcript lines were found in that file.");
+      }
+
+      setTranscriptSegmentsState(parsedTranscript);
+      setTranscriptFileName(file.name);
+      setTranscriptError("");
+    } catch (parseError) {
+      setTranscriptSegmentsState([]);
+      setTranscriptFileName("");
+      setTranscriptError(
+        parseError instanceof Error
+          ? parseError.message
+          : "Could not read that transcript file.",
+      );
+    } finally {
+      event.target.value = "";
     }
   }
 
@@ -697,17 +747,31 @@ function AddVideoScreen() {
                   Drop `.srt`, `.vtt`, or `.txt`
                 </FieldTitle>
                 <FieldDescription className="mx-auto max-w-sm text-center">
-                  Manual transcripts keep the workflow available when a video
-                  has no public captions.
+                  {transcriptSegments.length > 0
+                    ? `Loaded ${transcriptSegments.length} lines from ${transcriptFileName}.`
+                    : "Manual transcripts keep the workflow available when a video has no public captions."}
                 </FieldDescription>
+                <input
+                  accept=".srt,.vtt,.txt"
+                  className="sr-only"
+                  onChange={handleTranscriptFileChange}
+                  ref={transcriptInputRef}
+                  type="file"
+                />
                 <Button
                   className="mt-4 border-2 border-foreground"
+                  onClick={() => transcriptInputRef.current?.click()}
                   type="button"
                   variant="outline"
                 >
-                  Choose file
+                  {transcriptSegments.length > 0 ? "Replace file" : "Choose file"}
                 </Button>
               </div>
+              {transcriptError ? (
+                <FieldDescription className="font-bold text-destructive">
+                  {transcriptError}
+                </FieldDescription>
+              ) : null}
             </Field>
             <MascotBubble tone="sun">
               We will fetch the transcript if available, translate it to Sinhala,
@@ -821,6 +885,11 @@ function WatchScreen() {
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const selectedVideo = useAppStore((state) => state.selectedVideo);
+  const getTranscriptSegments = useAppStore(
+    (state) => state.getTranscriptSegments,
+  );
+  const selectedTranscript = getTranscriptSegments(selectedVideo.id);
+  const activeSubtitle = selectedTranscript[1] ?? selectedTranscript[0];
 
   return (
     <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -865,7 +934,8 @@ function WatchScreen() {
                   fontSize: `${subtitleSize}px`,
                 }}
               >
-                ක්වොන්ටම් භෞතිකයේ අංශු තත්ත්ව කිහිපයක තිබිය හැක.
+                {activeSubtitle?.sinhala ??
+                  "Sinhala subtitles will appear after transcript processing."}
               </div>
             ) : null}
             <div className="absolute inset-x-4 bottom-4 flex items-center gap-3 text-white">
@@ -894,6 +964,12 @@ function WatchScreen() {
 }
 
 function TranscriptPanel() {
+  const selectedVideo = useAppStore((state) => state.selectedVideo);
+  const getTranscriptSegments = useAppStore(
+    (state) => state.getTranscriptSegments,
+  );
+  const selectedTranscript = getTranscriptSegments(selectedVideo.id);
+
   return (
     <StickerCard>
       <Tabs defaultValue="sinhala">
@@ -910,10 +986,10 @@ function TranscriptPanel() {
         </CardHeader>
         <CardContent>
           <TabsContent className="mt-0" value="sinhala">
-            <TranscriptRows mode="sinhala" />
+            <TranscriptRows mode="sinhala" segments={selectedTranscript} />
           </TabsContent>
           <TabsContent className="mt-0" value="bilingual">
-            <TranscriptRows mode="bilingual" />
+            <TranscriptRows mode="bilingual" segments={selectedTranscript} />
           </TabsContent>
         </CardContent>
       </Tabs>
@@ -921,11 +997,17 @@ function TranscriptPanel() {
   );
 }
 
-function TranscriptRows({ mode }: { mode: "sinhala" | "bilingual" }) {
+function TranscriptRows({
+  mode,
+  segments,
+}: {
+  mode: "sinhala" | "bilingual";
+  segments: TranscriptSegment[];
+}) {
   return (
     <ScrollArea className="h-[260px] pr-3">
       <div className="flex flex-col gap-2">
-        {transcript.map((segment, index) => (
+        {segments.map((segment, index) => (
           <button
             className={cn(
               "grid grid-cols-[56px_1fr] gap-3 rounded-md border-2 border-foreground bg-card p-3 text-left shadow-[2px_2px_0_var(--vidura-ink)]",

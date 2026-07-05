@@ -1,5 +1,11 @@
 import { create } from "zustand";
-import { activeVideo, videos, type Video } from "@/features/videos/data";
+import {
+  activeVideo,
+  transcript,
+  videos,
+  type TranscriptSegment,
+  type Video,
+} from "@/features/videos/data";
 
 export type AppView = "library" | "add" | "watch" | "chat" | "settings";
 
@@ -7,10 +13,16 @@ type AppState = {
   currentView: AppView;
   libraryVideos: Video[];
   selectedVideo: Video;
+  transcriptSegmentsByVideo: Record<string, TranscriptSegment[]>;
   subtitleEnabled: boolean;
   subtitleSize: number;
   subtitleOpacity: number;
   addVideo: (video: Video) => void;
+  setTranscriptSegments: (
+    videoId: string,
+    segments: TranscriptSegment[],
+  ) => void;
+  getTranscriptSegments: (videoId: string) => TranscriptSegment[];
   setCurrentView: (view: AppView) => void;
   selectVideo: (videoId: string) => void;
   setSubtitleEnabled: (enabled: boolean) => void;
@@ -18,10 +30,13 @@ type AppState = {
   setSubtitleOpacity: (value: number) => void;
 };
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   currentView: "library",
   libraryVideos: videos,
   selectedVideo: activeVideo,
+  transcriptSegmentsByVideo: {
+    [activeVideo.id]: transcript,
+  },
   subtitleEnabled: true,
   subtitleSize: 20,
   subtitleOpacity: 82,
@@ -45,6 +60,17 @@ export const useAppStore = create<AppState>((set) => ({
         selectedVideo: video,
       };
     }),
+  setTranscriptSegments: (videoId, segments) =>
+    set((state) => ({
+      transcriptSegmentsByVideo: {
+        ...state.transcriptSegmentsByVideo,
+        [videoId]: segments,
+      },
+    })),
+  getTranscriptSegments: (videoId) => {
+    const state = get();
+    return state.transcriptSegmentsByVideo[videoId] ?? transcript;
+  },
   setCurrentView: (currentView) => set({ currentView }),
   selectVideo: (videoId) =>
     set((state) => ({
