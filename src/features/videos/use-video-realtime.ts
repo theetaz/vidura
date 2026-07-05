@@ -50,7 +50,13 @@ export function useVideoRealtime(enabled: boolean) {
       );
     }
 
-    channel.subscribe();
+    channel.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        void queryClient.invalidateQueries({
+          queryKey: videoQueryKeys.all,
+        });
+      }
+    });
 
     return () => {
       void client.removeChannel(channel);

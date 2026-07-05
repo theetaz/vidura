@@ -285,7 +285,23 @@ function useLibraryVideos(enabled: boolean) {
     queryKey: videoQueryKeys.all,
     queryFn: fetchLibraryVideos,
     enabled,
+    refetchInterval: (query) =>
+      hasActiveVideoJob(query.state.data as LibraryVideo[] | undefined)
+        ? 2_000
+        : false,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
+    staleTime: 0,
   });
+}
+
+function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {
+  return videos?.some((video) => {
+    const jobStatus = video.latestJob?.status;
+
+    return video.status !== "ready" || jobStatus === "queued" ||
+      jobStatus === "running";
+  }) ?? false;
 }
 
 function LoadingScreen() {
