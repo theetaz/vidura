@@ -8,6 +8,15 @@ import {
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
+import {
   BadgeCheckIcon,
   BellIcon,
   BookOpenIcon,
@@ -97,7 +106,6 @@ import {
   fetchLibraryVideos,
   fetchVideoTranscript,
   sendVideoChatMessage,
-  processVideoJob,
   videoQueryKeys,
   type LibraryVideo,
 } from "@/features/videos/api";
@@ -128,12 +136,13 @@ const navItems: Array<{
   view: AppView;
   label: string;
   Icon: typeof HomeIcon;
+  path: string;
 }> = [
-  { view: "library", label: "Library", Icon: HomeIcon },
-  { view: "add", label: "Add", Icon: PlusIcon },
-  { view: "watch", label: "Watch", Icon: CirclePlayIcon },
-  { view: "chat", label: "Chats", Icon: MessageCircleIcon },
-  { view: "settings", label: "Settings", Icon: SettingsIcon },
+  { view: "library", label: "Library", Icon: HomeIcon, path: "/library" },
+  { view: "add", label: "Add", Icon: PlusIcon, path: "/add" },
+  { view: "watch", label: "Watch", Icon: CirclePlayIcon, path: "/watch" },
+  { view: "chat", label: "Chats", Icon: MessageCircleIcon, path: "/chats" },
+  { view: "settings", label: "Settings", Icon: SettingsIcon, path: "/settings" },
 ];
 
 function App() {
@@ -148,8 +157,39 @@ function titleCase(value: string) {
   return value.replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function viewFromPath(pathname: string): AppView {
+  if (pathname.startsWith("/add")) {
+    return "add";
+  }
+
+  if (pathname.startsWith("/watch") || pathname.startsWith("/processing")) {
+    return "watch";
+  }
+
+  if (pathname.startsWith("/chats")) {
+    return "chat";
+  }
+
+  if (pathname.startsWith("/settings")) {
+    return "settings";
+  }
+
+  return "library";
+}
+
+function navPathFor(view: AppView, selectedVideoId: string | null) {
+  if (view === "watch" && selectedVideoId) {
+    return `/watch/${selectedVideoId}`;
+  }
+
+  if (view === "chat" && selectedVideoId) {
+    return `/chats/${selectedVideoId}`;
+  }
+
+  return navItems.find((item) => item.view === view)?.path ?? "/library";
+}
+
 function ViduraApp() {
-  const currentView = useAppStore((state) => state.currentView);
   const selectedVideoId = useAppStore((state) => state.selectedVideoId);
   const setSelectedVideoId = useAppStore((state) => state.setSelectedVideoId);
   const auth = useAuth();
@@ -190,11 +230,39 @@ function ViduraApp() {
         <DesktopSidebar />
         <main className="min-w-0 flex-1 px-4 pb-36 pt-4 sm:px-6 lg:px-6 lg:pb-7 xl:px-7">
           <TopBar />
-          {currentView === "library" ? <LibraryScreen videos={videosQuery.data ?? []} isPending={videosQuery.isPending} error={videosQuery.error} /> : null}
-          {currentView === "add" ? <AddVideoScreen /> : null}
-          {currentView === "watch" ? <WatchScreen videos={videosQuery.data ?? []} /> : null}
-          {currentView === "chat" ? <ChatScreen standalone videos={videosQuery.data ?? []} /> : null}
-          {currentView === "settings" ? <SettingsScreen /> : null}
+          <Routes>
+            <Route element={<Navigate replace to="/library" />} path="/" />
+            <Route
+              element={
+                <LibraryScreen
+                  error={videosQuery.error}
+                  isPending={videosQuery.isPending}
+                  videos={videosQuery.data ?? []}
+                />
+              }
+              path="/library"
+            />
+            <Route element={<AddVideoScreen />} path="/add" />
+            <Route element={<ProcessingRoute />} path="/processing/:videoId" />
+            <Route
+              element={<WatchScreen videos={videosQuery.data ?? []} />}
+              path="/watch"
+            />
+            <Route
+              element={<WatchScreen videos={videosQuery.data ?? []} />}
+              path="/watch/:videoId"
+            />
+            <Route
+              element={<ChatScreen standalone videos={videosQuery.data ?? []} />}
+              path="/chats"
+            />
+            <Route
+              element={<ChatScreen standalone videos={videosQuery.data ?? []} />}
+              path="/chats/:videoId"
+            />
+            <Route element={<SettingsScreen />} path="/settings" />
+            <Route element={<Navigate replace to="/library" />} path="*" />
+          </Routes>
         </main>
         {auth.configured ? (
           <Button
@@ -320,8 +388,9 @@ function AuthScreen({
 }
 
 function TopBar() {
-  const currentView = useAppStore((state) => state.currentView);
-  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const location = useLocation();
+  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const currentView = viewFromPath(location.pathname);
   const title = {
     library: "Library",
     add: "Add video",
@@ -359,13 +428,15 @@ function TopBar() {
           <div className="flex flex-col gap-2 px-4">
             {navItems.map(({ view, label, Icon }) => (
               <Button
+                asChild
                 className="justify-start"
                 key={view}
-                onClick={() => setCurrentView(view)}
                 variant={currentView === view ? "default" : "ghost"}
               >
-                <Icon data-icon="inline-start" />
-                {label}
+                <NavLink to={navPathFor(view, selectedVideoId)}>
+                  <Icon data-icon="inline-start" />
+                  {label}
+                </NavLink>
               </Button>
             ))}
           </div>
@@ -376,8 +447,9 @@ function TopBar() {
 }
 
 function DesktopSidebar() {
-  const currentView = useAppStore((state) => state.currentView);
-  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const location = useLocation();
+  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const currentView = viewFromPath(location.pathname);
 
   return (
     <aside className="sticky top-0 hidden h-dvh w-[216px] shrink-0 border-r-2 border-foreground bg-background px-4 py-5 lg:block 2xl:w-[224px]">
@@ -400,17 +472,19 @@ function DesktopSidebar() {
         <nav className="flex flex-col gap-1.5">
           {navItems.map(({ view, label, Icon }) => (
             <Button
+              asChild
               className={cn(
                 "h-9 justify-start rounded-md border-2 border-transparent px-2 text-sm font-black",
                 currentView === view &&
                   "border-foreground bg-vidura-mint text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint"
               )}
               key={view}
-              onClick={() => setCurrentView(view)}
               variant={currentView === view ? "secondary" : "ghost"}
             >
-              <Icon data-icon="inline-start" />
-              {label}
+              <NavLink to={navPathFor(view, selectedVideoId)}>
+                <Icon data-icon="inline-start" />
+                {label}
+              </NavLink>
             </Button>
           ))}
         </nav>
@@ -436,25 +510,28 @@ function DesktopSidebar() {
 }
 
 function MobileNav() {
-  const currentView = useAppStore((state) => state.currentView);
-  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const location = useLocation();
+  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const currentView = viewFromPath(location.pathname);
 
   return (
     <nav className="fixed inset-x-3 bottom-3 z-40 rounded-lg border-2 border-foreground bg-card px-2 py-1.5 shadow-[4px_4px_0_var(--vidura-ink)] lg:hidden">
       <div className="grid grid-cols-5 gap-1">
         {navItems.map(({ view, label, Icon }) => (
           <Button
+            asChild
             className={cn(
               "h-12 flex-col gap-0.5 rounded-md px-1 text-[0.66rem] font-bold",
               currentView === view &&
                 "border-2 border-foreground bg-vidura-mint text-foreground hover:bg-vidura-mint"
             )}
             key={view}
-            onClick={() => setCurrentView(view)}
             variant="ghost"
           >
-            <Icon data-icon="inline-start" />
-            {label}
+            <NavLink to={navPathFor(view, selectedVideoId)}>
+              <Icon data-icon="inline-start" />
+              {label}
+            </NavLink>
           </Button>
         ))}
       </div>
@@ -473,6 +550,7 @@ function LibraryScreen({
 }) {
   const [category, setCategory] = useState("All");
   const selectVideo = useAppStore((state) => state.selectVideo);
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const deleteVideoMutation = useMutation({
     mutationFn: deleteVideo,
@@ -570,7 +648,10 @@ function LibraryScreen({
             <StickerCard
               className="cursor-pointer transition-transform hover:-translate-y-0.5"
               key={video.id}
-              onClick={() => selectVideo(video.id)}
+              onClick={() => {
+                selectVideo(video.id);
+                navigate(`/watch/${video.id}`);
+              }}
             >
               <CardContent className="grid gap-3 p-3 sm:grid-cols-[164px_1fr_auto] sm:items-center">
                 <div
@@ -579,7 +660,15 @@ function LibraryScreen({
                     video.accent
                   )}
                 >
-                  <video.Icon className="size-12" />
+                  {video.thumbnailUrl ? (
+                    <img
+                      alt=""
+                      className="size-full object-cover"
+                      src={video.thumbnailUrl}
+                    />
+                  ) : (
+                    <video.Icon className="size-12" />
+                  )}
                   <Badge className="absolute bottom-2 right-2 border border-foreground bg-card text-foreground">
                     {video.duration}
                   </Badge>
@@ -607,7 +696,12 @@ function LibraryScreen({
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuGroup>
-                          <DropdownMenuItem onClick={() => selectVideo(video.id)}>
+                          <DropdownMenuItem
+                            onClick={() => {
+                              selectVideo(video.id);
+                              navigate(`/watch/${video.id}`);
+                            }}
+                          >
                             Open video
                           </DropdownMenuItem>
                           <DropdownMenuItem>Download subtitles</DropdownMenuItem>
@@ -691,7 +785,6 @@ function SearchTools({ compact = false }: { compact?: boolean }) {
 
 function AddVideoScreen() {
   const transcriptInputRef = useRef<HTMLInputElement>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [urlError, setUrlError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -700,9 +793,8 @@ function AddVideoScreen() {
     TranscriptSegment[]
   >([]);
   const [transcriptError, setTranscriptError] = useState("");
-  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
   const setSelectedVideoId = useAppStore((state) => state.setSelectedVideoId);
-  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   async function handleStartProcessing(event: FormEvent<HTMLFormElement>) {
@@ -721,27 +813,14 @@ function AddVideoScreen() {
       const response = await createVideoJob({
         youtubeUrl: parsedUrl.canonicalUrl,
         targetLanguage: "si-LK",
+        segments: transcriptSegments,
       });
 
       setSelectedVideoId(response.video.id);
       await queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
 
-      if (transcriptSegments.length > 0) {
-        void processVideoJob({
-          jobId: response.job.id,
-          targetLanguage: "si-LK",
-          segments: transcriptSegments,
-        }).catch((processError) => {
-          setTranscriptError(
-            processError instanceof Error
-              ? processError.message
-              : "Backend translation did not start.",
-          );
-        });
-      }
-
       setUrlError("");
-      setIsProcessing(true);
+      navigate(`/processing/${response.video.id}`);
     } catch (createError) {
       setUrlError(
         createError instanceof Error
@@ -793,15 +872,6 @@ function AddVideoScreen() {
     } catch {
       setUrlError("Clipboard access was not available. Paste the link manually.");
     }
-  }
-
-  if (isProcessing) {
-    return (
-      <ProcessingScreen
-        onOpenWatch={() => setCurrentView("watch")}
-        videoId={selectedVideoId}
-      />
-    );
   }
 
   return (
@@ -935,6 +1005,18 @@ function AddVideoScreen() {
   );
 }
 
+function ProcessingRoute() {
+  const { videoId } = useParams();
+  const navigate = useNavigate();
+
+  return (
+    <ProcessingScreen
+      onOpenWatch={() => navigate(videoId ? `/watch/${videoId}` : "/watch")}
+      videoId={videoId ?? null}
+    />
+  );
+}
+
 function ProcessingScreen({
   onOpenWatch,
   videoId,
@@ -1012,6 +1094,12 @@ function ProcessingScreen({
             Open watch screen
             <CirclePlayIcon data-icon="inline-end" />
           </CartoonButton>
+          <Button asChild className="border-2 border-foreground" variant="outline">
+            <NavLink to="/library">
+              Send to background
+              <HomeIcon data-icon="inline-end" />
+            </NavLink>
+          </Button>
         </div>
       </StickerPanel>
       <MascotBubble tone="mint">
@@ -1026,8 +1114,11 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const subtitleEnabled = useAppStore((state) => state.subtitleEnabled);
   const subtitleSize = useAppStore((state) => state.subtitleSize);
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
-  const setCurrentView = useAppStore((state) => state.setCurrentView);
-  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const { videoId } = useParams();
+  const navigate = useNavigate();
+  const storedSelectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const setSelectedVideoId = useAppStore((state) => state.setSelectedVideoId);
+  const selectedVideoId = videoId ?? storedSelectedVideoId;
   const selectedVideo =
     videos.find((video) => video.id === selectedVideoId) ?? videos[0] ?? null;
   const transcriptQuery = useQuery({
@@ -1040,6 +1131,12 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const embedUrl = isYouTubeVideoId(selectedVideo?.youtubeVideoId)
     ? buildYouTubeEmbedUrl(selectedVideo.youtubeVideoId)
     : null;
+
+  useEffect(() => {
+    if (selectedVideo?.id && selectedVideo.id !== storedSelectedVideoId) {
+      setSelectedVideoId(selectedVideo.id);
+    }
+  }, [selectedVideo?.id, setSelectedVideoId, storedSelectedVideoId]);
 
   if (!selectedVideo) {
     return (
@@ -1073,7 +1170,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             </Button>
             <Button
               className="border-2 border-foreground bg-vidura-mint text-foreground"
-              onClick={() => setCurrentView("settings")}
+              onClick={() => navigate("/settings")}
               variant="secondary"
             >
               <SettingsIcon data-icon="inline-start" />
@@ -1366,9 +1463,18 @@ function ChatScreen({
   standalone?: boolean;
   videos: LibraryVideo[];
 }) {
-  const selectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const { videoId } = useParams();
+  const storedSelectedVideoId = useAppStore((state) => state.selectedVideoId);
+  const setSelectedVideoId = useAppStore((state) => state.setSelectedVideoId);
+  const selectedVideoId = videoId ?? storedSelectedVideoId;
   const selectedVideo =
     videos.find((video) => video.id === selectedVideoId) ?? videos[0] ?? null;
+
+  useEffect(() => {
+    if (selectedVideo?.id && selectedVideo.id !== storedSelectedVideoId) {
+      setSelectedVideoId(selectedVideo.id);
+    }
+  }, [selectedVideo?.id, setSelectedVideoId, storedSelectedVideoId]);
 
   return (
     <section className={cn("mx-auto max-w-3xl", standalone && "pt-0")}>
@@ -1387,12 +1493,12 @@ function ChatScreen({
 
 function VideoInfoPanel({ video }: { video: LibraryVideo }) {
   const queryClient = useQueryClient();
-  const setCurrentView = useAppStore((state) => state.setCurrentView);
+  const navigate = useNavigate();
   const deleteVideoMutation = useMutation({
     mutationFn: deleteVideo,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
-      setCurrentView("library");
+      navigate("/library");
     },
   });
   const videoUrl =
@@ -1434,11 +1540,15 @@ function VideoInfoPanel({ video }: { video: LibraryVideo }) {
       <div className="flex gap-3">
         <div
           className={cn(
-            "grid size-20 shrink-0 place-items-center rounded-md border-2 border-foreground",
+            "grid size-20 shrink-0 place-items-center overflow-hidden rounded-md border-2 border-foreground",
             video.accent
           )}
         >
-          <video.Icon className="size-9" />
+          {video.thumbnailUrl ? (
+            <img alt="" className="size-full object-cover" src={video.thumbnailUrl} />
+          ) : (
+            <video.Icon className="size-9" />
+          )}
         </div>
         <div>
           <p className="font-black leading-tight">{video.title}</p>

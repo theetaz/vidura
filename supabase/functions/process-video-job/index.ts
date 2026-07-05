@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { YoutubeTranscript } from "npm:youtube-transcript@1.3.1";
 
 type TranscriptSegmentInput = {
   startMs?: number;
@@ -19,9 +20,23 @@ type TranslationResult = {
   text: string;
 };
 
+type NormalizedTranscriptSegment = {
+  index: number;
+  startMs: number;
+  endMs: number;
+  text: string;
+};
+
 type StoredSegment = {
   id: string;
   segment_index: number;
+};
+
+type VideoMetadata = {
+  title: string | null;
+  channelTitle: string | null;
+  durationMs: number | null;
+  thumbnailUrl: string | null;
 };
 
 type Database = {
@@ -47,11 +62,19 @@ type Database = {
       videos: {
         Row: {
           id: string;
+          youtube_video_id: string;
+          youtube_url: string;
         };
         Insert: Record<string, never>;
         Update: {
-          status?: "translating" | "ready" | "failed";
+          title?: string;
+          channel_title?: string | null;
+          thumbnail_url?: string | null;
+          duration_ms?: number | null;
+          source_language?: string | null;
+          status?: "fetching_transcript" | "translating" | "ready" | "failed";
           error_message?: string | null;
+          metadata?: Record<string, unknown>;
         };
         Relationships: [];
       };
@@ -151,11 +174,9 @@ Deno.serve(async (request) => {
     return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
 
-  const normalizedSegments = normalizeSegments(body.segments ?? []);
-
-  if (!body.jobId || normalizedSegments.length === 0) {
+  if (!body.jobId) {
     return jsonResponse(
-      { error: "jobId and at least one transcript segment are required" },
+      { error: "jobId is required" },
       400,
     );
   }
@@ -195,24 +216,84 @@ Deno.serve(async (request) => {
   }
 
   try {
+    const { data: video, error: videoError } = await serviceClient
+      .from("videos")
+      .select("id, youtube_video_id, youtube_url")
+      .eq("id", job.video_id)
+      .single();
+
+    if (videoError || !video) {
+      throw new Error("Video for processing job was not found");
+    }
+
     await updateJobState(serviceClient, job.id, job.video_id, {
       jobStatus: "running",
-      videoStatus: "translating",
-      progress: 15,
+      videoStatus: "fetching_transcript",
+      progress: 5,
       metadata: {
-        stage: "storing_transcript",
-        total_segments: normalizedSegments.length,
+        stage: "fetching_metadata",
         translated_segments: 0,
       },
     });
 
     const sourceLanguage = body.sourceLanguage ?? "en";
     const targetLanguage = body.targetLanguage ?? "si-LK";
+    const metadata = await fetchYouTubeMetadata(video.youtube_video_id);
+
+    await serviceClient
+      .from("videos")
+      .update({
+        title: metadata.title ?? undefined,
+        channel_title: metadata.channelTitle,
+        thumbnail_url: metadata.thumbnailUrl ??
+          `https://i.ytimg.com/vi/${video.youtube_video_id}/hqdefault.jpg`,
+        duration_ms: metadata.durationMs,
+        source_language: sourceLanguage,
+        metadata: {
+          youtube_metadata_fetched_at: new Date().toISOString(),
+        },
+      })
+      .eq("id", job.video_id);
+
+    await updateJobState(serviceClient, job.id, job.video_id, {
+      jobStatus: "running",
+      videoStatus: "fetching_transcript",
+      progress: 12,
+      metadata: {
+        stage: "fetching_thumbnail",
+        thumbnail_url: metadata.thumbnailUrl ??
+          `https://i.ytimg.com/vi/${video.youtube_video_id}/hqdefault.jpg`,
+      },
+    });
+
+    const normalizedSegments = normalizeSegments(body.segments ?? []);
+    const transcriptSegments = normalizedSegments.length > 0
+      ? normalizedSegments
+      : await fetchYouTubeTranscriptSegments(video.youtube_video_id);
+
+    if (transcriptSegments.length === 0) {
+      throw new Error("No transcript segments were available for this video");
+    }
+
+    await updateJobState(serviceClient, job.id, job.video_id, {
+      jobStatus: "running",
+      videoStatus: "fetching_transcript",
+      progress: 20,
+      metadata: {
+        stage: "storing_transcript",
+        total_segments: transcriptSegments.length,
+        translated_segments: 0,
+        transcript_source: normalizedSegments.length > 0
+          ? "uploaded"
+          : "youtube",
+      },
+    });
+
     const storedSegments = await upsertTranscriptSegments(
       serviceClient,
       job.video_id,
       sourceLanguage,
-      normalizedSegments,
+      transcriptSegments,
     );
 
     await updateJobState(serviceClient, job.id, job.video_id, {
@@ -221,37 +302,43 @@ Deno.serve(async (request) => {
       progress: 25,
       metadata: {
         stage: "translating",
-        total_segments: normalizedSegments.length,
+        total_segments: transcriptSegments.length,
         translated_segments: 0,
       },
     });
 
     const translations: TranslationResult[] = [];
+    const batches = chunkSegments(transcriptSegments, 12);
 
-    for (const [position, segment] of normalizedSegments.entries()) {
+    for (const [batchIndex, batch] of batches.entries()) {
+      const translatedCount = translations.length;
+      const currentSegment = batch[0];
+
       await updateJobState(serviceClient, job.id, job.video_id, {
         jobStatus: "running",
         videoStatus: "translating",
         progress: calculateTranslationProgress(
-          position,
-          normalizedSegments.length,
+          translatedCount,
+          transcriptSegments.length,
         ),
         metadata: {
           stage: "translating",
-          total_segments: normalizedSegments.length,
-          translated_segments: position,
-          current_segment_index: segment.index,
-          current_segment_start_ms: segment.startMs,
-          current_segment_text: segment.text,
+          total_segments: transcriptSegments.length,
+          translated_segments: translatedCount,
+          current_batch: batchIndex + 1,
+          total_batches: batches.length,
+          current_segment_index: currentSegment.index,
+          current_segment_start_ms: currentSegment.startMs,
+          current_segment_text: currentSegment.text,
         },
       });
 
-      const translation = await translateSegment({
+      const batchTranslations = await translateSegmentBatch({
         apiKey: openRouterApiKey,
         model: openRouterModel,
         sourceLanguage,
         targetLanguage,
-        segment,
+        segments: batch,
       });
 
       await upsertTranslatedSegments(
@@ -260,9 +347,9 @@ Deno.serve(async (request) => {
         targetLanguage,
         openRouterModel,
         storedSegments,
-        [translation],
+        batchTranslations,
       );
-      translations.push(translation);
+      translations.push(...batchTranslations);
     }
 
     await updateJobState(serviceClient, job.id, job.video_id, {
@@ -271,7 +358,7 @@ Deno.serve(async (request) => {
       progress: 100,
       metadata: {
         stage: "ready",
-        total_segments: normalizedSegments.length,
+        total_segments: transcriptSegments.length,
         translated_segments: translations.length,
       },
     });
@@ -323,7 +410,118 @@ function normalizeSegments(segments: TranscriptSegmentInput[]) {
       text: segment.text?.trim() ?? "",
     }))
     .filter((segment) => segment.text && segment.endMs > segment.startMs)
-    .slice(0, 120);
+    .slice(0, 500);
+}
+
+async function fetchYouTubeMetadata(videoId: string): Promise<VideoMetadata> {
+  const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+    headers: {
+      "Accept-Language": "en-US,en;q=0.9",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+    },
+  });
+
+  if (!response.ok) {
+    return {
+      title: null,
+      channelTitle: null,
+      durationMs: null,
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    };
+  }
+
+  const html = await response.text();
+  const playerResponse = parseInlineJson(html, "ytInitialPlayerResponse");
+  const videoDetails = playerResponse?.videoDetails as
+    | Record<string, unknown>
+    | undefined;
+  const thumbnails = ((videoDetails?.thumbnail as Record<string, unknown>)
+    ?.thumbnails ?? []) as Array<Record<string, unknown>>;
+  const bestThumbnail = thumbnails
+    .filter((thumbnail) => typeof thumbnail.url === "string")
+    .sort((a, b) => Number(b.width ?? 0) - Number(a.width ?? 0))[0];
+  const lengthSeconds = Number(videoDetails?.lengthSeconds);
+
+  return {
+    title: typeof videoDetails?.title === "string" ? videoDetails.title : null,
+    channelTitle: typeof videoDetails?.author === "string"
+      ? videoDetails.author
+      : null,
+    durationMs: Number.isFinite(lengthSeconds) ? lengthSeconds * 1000 : null,
+    thumbnailUrl: typeof bestThumbnail?.url === "string"
+      ? bestThumbnail.url
+      : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+  };
+}
+
+function parseInlineJson(html: string, globalName: string) {
+  const startToken = `var ${globalName} = `;
+  const startIndex = html.indexOf(startToken);
+
+  if (startIndex === -1) {
+    return null;
+  }
+
+  const jsonStart = startIndex + startToken.length;
+  let depth = 0;
+
+  for (let index = jsonStart; index < html.length; index += 1) {
+    if (html[index] === "{") {
+      depth += 1;
+    } else if (html[index] === "}") {
+      depth -= 1;
+
+      if (depth === 0) {
+        try {
+          return JSON.parse(html.slice(jsonStart, index + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+async function fetchYouTubeTranscriptSegments(
+  videoId: string,
+): Promise<NormalizedTranscriptSegment[]> {
+  const transcript = await YoutubeTranscript.fetchTranscript(videoId, {
+    lang: "en",
+  });
+
+  return transcript
+    .map((segment, index) => {
+      const startMs = normalizeTranscriptTime(segment.offset);
+      const durationMs = normalizeTranscriptDuration(segment.duration);
+
+      return {
+        index,
+        startMs,
+        endMs: Math.max(startMs + 1, startMs + durationMs),
+        text: segment.text.replace(/\s+/g, " ").trim(),
+      };
+    })
+    .filter((segment) => segment.text && segment.endMs > segment.startMs)
+    .slice(0, 500);
+}
+
+function normalizeTranscriptTime(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor(value <= 120 ? value * 1000 : value));
+}
+
+function normalizeTranscriptDuration(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 4500;
+  }
+
+  return Math.max(1, Math.floor(value <= 120 ? value * 1000 : value));
 }
 
 async function updateJobState(
@@ -332,7 +530,7 @@ async function updateJobState(
   videoId: string,
   state: {
     jobStatus: "running" | "ready" | "failed";
-    videoStatus: "translating" | "ready" | "failed";
+    videoStatus: "fetching_transcript" | "translating" | "ready" | "failed";
     progress: number;
     errorMessage?: string;
     metadata?: Record<string, unknown>;
@@ -396,6 +594,16 @@ async function upsertTranscriptSegments(
   return data as StoredSegment[];
 }
 
+function chunkSegments<T>(segments: T[], size: number) {
+  const batches: T[][] = [];
+
+  for (let index = 0; index < segments.length; index += size) {
+    batches.push(segments.slice(index, index + size));
+  }
+
+  return batches;
+}
+
 function calculateTranslationProgress(position: number, totalSegments: number) {
   if (totalSegments <= 0) {
     return 25;
@@ -404,12 +612,12 @@ function calculateTranslationProgress(position: number, totalSegments: number) {
   return Math.min(95, 25 + Math.floor((position / totalSegments) * 70));
 }
 
-async function translateSegment(input: {
+async function translateSegmentBatch(input: {
   apiKey: string;
   model: string;
   sourceLanguage: string;
   targetLanguage: string;
-  segment: ReturnType<typeof normalizeSegments>[number];
+  segments: NormalizedTranscriptSegment[];
 }) {
   const response = await fetch(openRouterUrl, {
     method: "POST",
@@ -433,11 +641,11 @@ async function translateSegment(input: {
             sourceLanguage: input.sourceLanguage,
             targetLanguage: input.targetLanguage,
             instructions:
-              "Translate this segment. Keep the same index value. Return one JSON object with index and text.",
-            segment: {
-              index: input.segment.index,
-              text: input.segment.text,
-            },
+              "Translate every segment. Keep each index value unchanged. Return a JSON array of objects with index and text only.",
+            segments: input.segments.map((segment) => ({
+              index: segment.index,
+              text: segment.text,
+            })),
           }),
         },
       ],
@@ -456,30 +664,41 @@ async function translateSegment(input: {
     throw new Error("OpenRouter returned an invalid translation response");
   }
 
-  return parseTranslationContent(content, input.segment.index);
+  return parseTranslationContent(content, input.segments);
 }
 
 function parseTranslationContent(
   content: string,
-  fallbackIndex: number,
-): TranslationResult {
+  sourceSegments: NormalizedTranscriptSegment[],
+): TranslationResult[] {
   const jsonText = content
     .trim()
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "");
   const parsed = JSON.parse(jsonText);
-  const item = Array.isArray(parsed) ? parsed[0] : parsed;
-  const index = Number.isInteger(Number(item?.index))
-    ? Number(item.index)
-    : fallbackIndex;
-  const text = String(item?.text ?? "").trim();
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  const sourceIndexSet = new Set(
+    sourceSegments.map((segment) => segment.index),
+  );
+  const translations = items.flatMap((item): TranslationResult[] => {
+    const index = Number.isInteger(Number(item?.index))
+      ? Number(item.index)
+      : null;
+    const text = String(item?.text ?? "").trim();
 
-  if (!text) {
+    if (index === null || !sourceIndexSet.has(index) || !text) {
+      return [];
+    }
+
+    return [{ index, text }];
+  });
+
+  if (translations.length === 0) {
     throw new Error("Translation response did not include text");
   }
 
-  return { index, text };
+  return translations;
 }
 
 async function upsertTranslatedSegments(

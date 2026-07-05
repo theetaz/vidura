@@ -7,6 +7,7 @@ export type Video = {
   id: string;
   youtubeVideoId?: string;
   youtubeUrl?: string;
+  thumbnailUrl?: string;
   title: string;
   channel: string;
   category: string;

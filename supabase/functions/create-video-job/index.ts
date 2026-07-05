@@ -1,10 +1,21 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "@supabase/supabase-js";
 
+declare const EdgeRuntime: {
+  waitUntil: (promise: Promise<unknown>) => void;
+};
+
 type CreateVideoJobBody = {
   youtubeUrl?: string;
   title?: string;
   targetLanguage?: string;
+  segments?: TranscriptSegmentInput[];
+};
+
+type TranscriptSegmentInput = {
+  startMs?: number;
+  endMs?: number;
+  text?: string;
 };
 
 type ParsedYouTubeUrl = {
@@ -92,6 +103,8 @@ Deno.serve(async (request) => {
         youtube_url: parsedUrl.canonicalUrl,
         title: sanitizeTitle(body.title) ??
           `YouTube lesson ${parsedUrl.videoId}`,
+        thumbnail_url:
+          `https://i.ytimg.com/vi/${parsedUrl.videoId}/hqdefault.jpg`,
         target_language: body.targetLanguage ?? "si-LK",
         status: "queued",
       },
@@ -116,8 +129,11 @@ Deno.serve(async (request) => {
       status: "queued",
       progress: 0,
       metadata: {
+        stage: "queued",
         requested_language_code: body.targetLanguage ?? "si-LK",
         youtube_video_id: parsedUrl.videoId,
+        has_uploaded_transcript: Array.isArray(body.segments) &&
+          body.segments.length > 0,
       },
     })
     .select("id, video_id, status, progress, created_at")
@@ -130,8 +146,57 @@ Deno.serve(async (request) => {
     }, 500);
   }
 
+  EdgeRuntime.waitUntil(
+    startProcessingJob({
+      authorization,
+      supabaseUrl,
+      supabaseAnonKey,
+      jobId: job.id,
+      targetLanguage: body.targetLanguage ?? "si-LK",
+      segments: body.segments ?? [],
+    }),
+  );
+
   return jsonResponse({ video, job }, 201);
 });
+
+async function startProcessingJob(input: {
+  authorization: string;
+  supabaseUrl: string;
+  supabaseAnonKey: string;
+  jobId: string;
+  targetLanguage: string;
+  segments: TranscriptSegmentInput[];
+}) {
+  try {
+    const response = await fetch(
+      `${input.supabaseUrl}/functions/v1/process-video-job`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": input.authorization,
+          "Content-Type": "application/json",
+          "apikey": input.supabaseAnonKey,
+        },
+        body: JSON.stringify({
+          jobId: input.jobId,
+          targetLanguage: input.targetLanguage,
+          sourceLanguage: "en",
+          segments: input.segments,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      console.error("process-video-job background start failed", {
+        status: response.status,
+        body: await response.text(),
+      });
+    }
+  } catch (error) {
+    console.error("process-video-job background start failed", error);
+  }
+}
 
 async function parseBody(request: Request): Promise<CreateVideoJobBody | null> {
   try {

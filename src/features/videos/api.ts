@@ -26,6 +26,7 @@ type VideoRow = {
   youtube_url: string;
   title: string;
   channel_title: string | null;
+  thumbnail_url: string | null;
   duration_ms: number | null;
   target_language: string;
   status: "queued" | "fetching_transcript" | "translating" | "ready" | "failed";
@@ -113,7 +114,7 @@ export async function fetchLibraryVideos(): Promise<LibraryVideo[]> {
   const { data: videoRows, error: videoError } = await client
     .from("videos")
     .select(
-      "id, youtube_video_id, youtube_url, title, channel_title, duration_ms, target_language, status, error_message, created_at",
+      "id, youtube_video_id, youtube_url, title, channel_title, thumbnail_url, duration_ms, target_language, status, error_message, created_at",
     )
     .order("created_at", { ascending: false });
 
@@ -251,12 +252,22 @@ export async function createVideoJob(input: {
   youtubeUrl: string;
   title?: string;
   targetLanguage?: string;
+  segments?: TranscriptSegment[];
 }) {
   const client = requireSupabase();
   const { data, error } = await client.functions.invoke<CreateVideoJobResponse>(
     "create-video-job",
     {
-      body: input,
+      body: {
+        youtubeUrl: input.youtubeUrl,
+        title: input.title,
+        targetLanguage: input.targetLanguage,
+        segments: (input.segments ?? []).map((segment) => ({
+          startMs: segment.startMs ?? timestampToMilliseconds(segment.time),
+          endMs: segment.endMs ?? timestampToMilliseconds(segment.time) + 4500,
+          text: segment.original,
+        })),
+      },
     },
   );
 
@@ -431,6 +442,8 @@ function mapVideo(video: VideoRow, latestJob: ProcessingJob | null): LibraryVide
     id: video.id,
     youtubeVideoId: video.youtube_video_id,
     youtubeUrl: video.youtube_url,
+    thumbnailUrl: video.thumbnail_url ??
+      `https://i.ytimg.com/vi/${video.youtube_video_id}/hqdefault.jpg`,
     title: video.title,
     channel: video.channel_title ?? "YouTube",
     category: "Imported",
