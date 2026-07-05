@@ -87,16 +87,17 @@ import {
 } from "@/features/videos/api";
 import {
   categories,
-  chatMessages,
   languageOptions,
   learningStats,
   processingSteps,
   quickPrompts,
+  type ChatMessage,
   type TranscriptSegment,
 } from "@/features/videos/data";
 import { hasSupabaseConfig } from "@/lib/supabase";
 import { parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
+import { createLocalVideoReply } from "@/lib/video-chat";
 import { parseYouTubeUrl } from "@/lib/youtube";
 import { useAppStore, type AppView } from "@/stores/app-store";
 import {
@@ -117,6 +118,8 @@ const navItems: Array<{
   { view: "chat", label: "Chats", Icon: MessageCircleIcon },
   { view: "settings", label: "Settings", Icon: SettingsIcon },
 ];
+
+const emptyChatMessages: ChatMessage[] = [];
 
 function App() {
   return (
@@ -888,7 +891,11 @@ function WatchScreen() {
   const getTranscriptSegments = useAppStore(
     (state) => state.getTranscriptSegments,
   );
-  const selectedTranscript = getTranscriptSegments(selectedVideo.id);
+  const selectedTranscript = useAppStore(
+    (state) =>
+      state.transcriptSegmentsByVideo[selectedVideo.id] ??
+      getTranscriptSegments(selectedVideo.id),
+  );
   const activeSubtitle = selectedTranscript[1] ?? selectedTranscript[0];
 
   return (
@@ -968,7 +975,11 @@ function TranscriptPanel() {
   const getTranscriptSegments = useAppStore(
     (state) => state.getTranscriptSegments,
   );
-  const selectedTranscript = getTranscriptSegments(selectedVideo.id);
+  const selectedTranscript = useAppStore(
+    (state) =>
+      state.transcriptSegmentsByVideo[selectedVideo.id] ??
+      getTranscriptSegments(selectedVideo.id),
+  );
 
   return (
     <StickerCard>
@@ -1039,7 +1050,54 @@ function TranscriptRows({
 }
 
 function ChatPanel() {
+  const messageCounterRef = useRef(0);
   const [draft, setDraft] = useState("");
+  const selectedVideo = useAppStore((state) => state.selectedVideo);
+  const getTranscriptSegments = useAppStore(
+    (state) => state.getTranscriptSegments,
+  );
+  const addChatExchange = useAppStore((state) => state.addChatExchange);
+  const messages = useAppStore(
+    (state) => state.chatMessagesByVideo[selectedVideo.id] ?? emptyChatMessages,
+  );
+  const selectedTranscript = useAppStore(
+    (state) =>
+      state.transcriptSegmentsByVideo[selectedVideo.id] ??
+      getTranscriptSegments(selectedVideo.id),
+  );
+
+  function askVideo(question: string) {
+    const trimmedQuestion = question.trim();
+
+    if (!trimmedQuestion) {
+      return;
+    }
+
+    const reply = createLocalVideoReply(trimmedQuestion, selectedTranscript);
+    messageCounterRef.current += 1;
+    const messageId = `${selectedVideo.id}-${messageCounterRef.current}`;
+
+    addChatExchange(
+      selectedVideo.id,
+      {
+        id: `user-${messageId}`,
+        role: "user",
+        content: trimmedQuestion,
+      },
+      {
+        id: `assistant-${messageId}`,
+        role: "assistant",
+        content: reply.content,
+        citation: reply.citation,
+      },
+    );
+    setDraft("");
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    askVideo(draft);
+  }
 
   return (
     <StickerCard className="min-h-[360px]">
@@ -1064,7 +1122,8 @@ function ChatPanel() {
             <Button
               className="h-auto rounded-md border-2 border-foreground bg-vidura-cream px-3 py-2 text-xs"
               key={prompt}
-              onClick={() => setDraft(prompt)}
+              onClick={() => askVideo(prompt)}
+              type="button"
               variant="outline"
             >
               {prompt}
@@ -1073,7 +1132,12 @@ function ChatPanel() {
         </div>
         <ScrollArea className="h-[230px] pr-3">
           <div className="flex flex-col gap-3">
-            {chatMessages.map((message) => (
+            {messages.length === 0 ? (
+              <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-3 text-sm font-bold leading-relaxed text-foreground/65">
+                Ask a question after importing or selecting a video transcript.
+              </div>
+            ) : null}
+            {messages.map((message) => (
               <div
                 className={cn(
                   "max-w-[88%] rounded-lg border-2 border-foreground p-3 text-sm font-medium leading-relaxed shadow-[2px_2px_0_var(--vidura-ink)]",
@@ -1093,23 +1157,27 @@ function ChatPanel() {
             ))}
           </div>
         </ScrollArea>
-        <InputGroup className="h-auto border-2 border-foreground bg-card">
-          <InputGroupTextarea
-            className="min-h-16"
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="Ask about this video..."
-            value={draft}
-          />
-          <InputGroupAddon align="inline-end">
-            <InputGroupButton
-              className="bg-vidura-purple text-foreground"
-              size="icon-sm"
-            >
-              <SendIcon />
-              <span className="sr-only">Send message</span>
-            </InputGroupButton>
-          </InputGroupAddon>
-        </InputGroup>
+        <form onSubmit={handleSubmit}>
+          <InputGroup className="h-auto border-2 border-foreground bg-card">
+            <InputGroupTextarea
+              className="min-h-16"
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="Ask about this video..."
+              value={draft}
+            />
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton
+                className="bg-vidura-purple text-foreground"
+                disabled={!draft.trim()}
+                size="icon-sm"
+                type="submit"
+              >
+                <SendIcon />
+                <span className="sr-only">Send message</span>
+              </InputGroupButton>
+            </InputGroupAddon>
+          </InputGroup>
+        </form>
       </CardContent>
     </StickerCard>
   );
