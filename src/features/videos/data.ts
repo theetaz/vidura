@@ -26,6 +26,8 @@ export type Video = {
 export type TranscriptSegment = {
   id: string;
   time: string;
+  startMs?: number;
+  endMs?: number;
   original: string;
   sinhala: string;
 };

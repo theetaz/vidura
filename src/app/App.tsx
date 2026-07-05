@@ -84,6 +84,7 @@ import { useAuth } from "@/features/auth/use-auth";
 import {
   createVideoJob,
   mapCreatedVideoToLibraryVideo,
+  processVideoJob,
 } from "@/features/videos/api";
 import {
   categories,
@@ -619,6 +620,19 @@ function AddVideoScreen() {
         addVideo(importedVideo);
         if (transcriptSegments.length > 0) {
           setTranscriptSegments(importedVideo.id, transcriptSegments);
+          try {
+            await processVideoJob({
+              jobId: response.job.id,
+              targetLanguage: "si-LK",
+              segments: transcriptSegments,
+            });
+          } catch (processError) {
+            setTranscriptError(
+              processError instanceof Error
+                ? processError.message
+                : "Backend translation did not start.",
+            );
+          }
         }
       } else {
         const importedVideo = {

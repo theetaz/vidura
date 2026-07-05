@@ -88,6 +88,8 @@ function cuesToTranscriptSegments(cues: ParsedCue[]): TranscriptSegment[] {
     .map((cue, index) => ({
       id: `uploaded-${index}`,
       time: formatTimestamp(cue.startMs),
+      startMs: cue.startMs,
+      endMs: cue.endMs,
       original: cue.text,
       sinhala: cue.text,
     }));
@@ -101,6 +103,8 @@ function plainTextToTranscriptSegments(text: string): TranscriptSegment[] {
     .map((line, index) => ({
       id: `plain-${index}`,
       time: formatTimestamp(index * 5000),
+      startMs: index * 5000,
+      endMs: index * 5000 + 4500,
       original: line,
       sinhala: line,
     }));
@@ -115,4 +119,3 @@ function formatTimestamp(milliseconds: number) {
     seconds.toString().padStart(2, "0")
   }`;
 }
-

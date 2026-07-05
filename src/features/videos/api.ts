@@ -1,4 +1,4 @@
-import type { Video } from "@/features/videos/data";
+import type { TranscriptSegment, Video } from "@/features/videos/data";
 import { supabase } from "@/lib/supabase";
 import { LanguagesIcon } from "lucide-react";
 
@@ -18,6 +18,19 @@ type CreateVideoJobResponse = {
     progress: number;
     created_at: string;
   };
+};
+
+type ProcessVideoJobResponse = {
+  job: {
+    id: string;
+    status: string;
+    progress: number;
+  };
+  video: {
+    id: string;
+    status: string;
+  };
+  translatedSegments: number;
 };
 
 export async function createVideoJob(input: {
@@ -47,6 +60,45 @@ export async function createVideoJob(input: {
   return data;
 }
 
+export async function processVideoJob(input: {
+  jobId: string;
+  sourceLanguage?: string;
+  targetLanguage?: string;
+  segments: TranscriptSegment[];
+}) {
+  if (!supabase) {
+    throw new Error("Supabase is not configured.");
+  }
+
+  const { data, error } = await supabase.functions.invoke<ProcessVideoJobResponse>(
+    "process-video-job",
+    {
+      body: {
+        jobId: input.jobId,
+        sourceLanguage: input.sourceLanguage ?? "en",
+        targetLanguage: input.targetLanguage ?? "si-LK",
+        segments: input.segments.map((segment, index) => ({
+          startMs: segment.startMs ?? timestampToMilliseconds(segment.time),
+          endMs: segment.endMs ??
+            timestampToMilliseconds(segment.time) + 4500,
+          text: segment.original,
+          index,
+        })),
+      },
+    },
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data?.job || !data.video) {
+    throw new Error("The process-video-job function returned an invalid response.");
+  }
+
+  return data;
+}
+
 export function mapCreatedVideoToLibraryVideo(
   response: CreateVideoJobResponse,
 ): Video {
@@ -65,3 +117,7 @@ export function mapCreatedVideoToLibraryVideo(
   };
 }
 
+function timestampToMilliseconds(timestamp: string) {
+  const [minutes = "0", seconds = "0"] = timestamp.split(":");
+  return (Number(minutes) * 60 + Number(seconds)) * 1000;
+}
