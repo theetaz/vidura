@@ -44,6 +44,18 @@ export function parseYouTubeUrl(value: string): ParsedYouTubeUrl | null {
   }
 }
 
+export function isYouTubeVideoId(value?: string): value is string {
+  return Boolean(value && YOUTUBE_ID_PATTERN.test(value));
+}
+
+export function buildYouTubeEmbedUrl(videoId: string) {
+  return `https://www.youtube-nocookie.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1`;
+}
+
+export function buildYouTubeWatchUrl(videoId: string) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
 function parseVideoIdFromPath(pathname: string, routeNames: string[]) {
   const [route, id] = pathname.split("/").filter(Boolean);
 
@@ -53,4 +65,3 @@ function parseVideoIdFromPath(pathname: string, routeNames: string[]) {
 
   return id ?? null;
 }
-

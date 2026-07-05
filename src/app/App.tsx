@@ -98,7 +98,12 @@ import { hasSupabaseConfig } from "@/lib/supabase";
 import { parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import { createLocalVideoReply } from "@/lib/video-chat";
-import { parseYouTubeUrl } from "@/lib/youtube";
+import {
+  buildYouTubeEmbedUrl,
+  buildYouTubeWatchUrl,
+  isYouTubeVideoId,
+  parseYouTubeUrl,
+} from "@/lib/youtube";
 import { useAppStore, type AppView } from "@/stores/app-store";
 import {
   CartoonButton,
@@ -897,6 +902,9 @@ function WatchScreen() {
       getTranscriptSegments(selectedVideo.id),
   );
   const activeSubtitle = selectedTranscript[1] ?? selectedTranscript[0];
+  const embedUrl = isYouTubeVideoId(selectedVideo.youtubeVideoId)
+    ? buildYouTubeEmbedUrl(selectedVideo.youtubeVideoId)
+    : null;
 
   return (
     <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -927,15 +935,30 @@ function WatchScreen() {
         </div>
         <StickerCard className="overflow-hidden bg-vidura-ink p-0">
           <div className="relative aspect-video overflow-hidden bg-vidura-ink">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_25%_30%,#8b7cf6_0_9%,transparent_10%),radial-gradient(circle_at_70%_35%,#ffcf4a_0_5%,transparent_6%),radial-gradient(circle_at_50%_75%,#4ecdc4_0_7%,transparent_8%)]" />
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="grid size-28 place-items-center rounded-full border-2 border-white bg-vidura-purple text-white shadow-[6px_6px_0_#ff6b5a] sm:size-40">
-                <CirclePlayIcon className="size-16 sm:size-24" />
-              </div>
-            </div>
+            {embedUrl ? (
+              <iframe
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+                className="absolute inset-0 size-full border-0"
+                src={embedUrl}
+                title={selectedVideo.title}
+              />
+            ) : (
+              <>
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_25%_30%,#8b7cf6_0_9%,transparent_10%),radial-gradient(circle_at_70%_35%,#ffcf4a_0_5%,transparent_6%),radial-gradient(circle_at_50%_75%,#4ecdc4_0_7%,transparent_8%)]" />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="grid size-28 place-items-center rounded-full border-2 border-white bg-vidura-purple text-white shadow-[6px_6px_0_#ff6b5a] sm:size-40">
+                    <CirclePlayIcon className="size-16 sm:size-24" />
+                  </div>
+                </div>
+              </>
+            )}
             {subtitleEnabled ? (
               <div
-                className="absolute inset-x-4 bottom-14 mx-auto max-w-3xl rounded-md border-2 border-white px-3 py-2 text-center font-black leading-snug text-white shadow-[4px_4px_0_#000]"
+                className={cn(
+                  "absolute inset-x-4 mx-auto max-w-3xl rounded-md border-2 border-white px-3 py-2 text-center font-black leading-snug text-white shadow-[4px_4px_0_#000]",
+                  embedUrl ? "bottom-6" : "bottom-14",
+                )}
                 style={{
                   backgroundColor: `rgb(17 24 39 / ${subtitleOpacity / 100})`,
                   fontSize: `${subtitleSize}px`,
@@ -945,13 +968,15 @@ function WatchScreen() {
                   "Sinhala subtitles will appear after transcript processing."}
               </div>
             ) : null}
-            <div className="absolute inset-x-4 bottom-4 flex items-center gap-3 text-white">
-              <CirclePlayIcon className="size-5" />
-              <div className="h-2 flex-1 rounded-full bg-white/25">
-                <div className="h-2 w-[32%] rounded-full bg-vidura-coral" />
+            {!embedUrl ? (
+              <div className="absolute inset-x-4 bottom-4 flex items-center gap-3 text-white">
+                <CirclePlayIcon className="size-5" />
+                <div className="h-2 flex-1 rounded-full bg-white/25">
+                  <div className="h-2 w-[32%] rounded-full bg-vidura-coral" />
+                </div>
+                <span className="text-xs font-black">4:12 / 22:47</span>
               </div>
-              <span className="text-xs font-black">4:12 / 22:47</span>
-            </div>
+            ) : null}
           </div>
         </StickerCard>
         <div className="grid gap-4 xl:hidden">
@@ -1193,6 +1218,39 @@ function ChatScreen({ standalone = false }: { standalone?: boolean }) {
 
 function VideoInfoPanel() {
   const selectedVideo = useAppStore((state) => state.selectedVideo);
+  const videoUrl =
+    selectedVideo.youtubeUrl ??
+    (isYouTubeVideoId(selectedVideo.youtubeVideoId)
+      ? buildYouTubeWatchUrl(selectedVideo.youtubeVideoId)
+      : null);
+
+  async function shareVideo() {
+    if (!videoUrl) {
+      return;
+    }
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: selectedVideo.title,
+          url: videoUrl,
+        });
+        return;
+      }
+
+      await navigator.clipboard.writeText(videoUrl);
+    } catch {
+      // Sharing can be cancelled by the user or blocked by browser permissions.
+    }
+  }
+
+  function openVideo() {
+    if (!videoUrl) {
+      return;
+    }
+
+    window.open(videoUrl, "_blank", "noopener,noreferrer");
+  }
 
   return (
     <StickerPanel title="Video info">
@@ -1214,16 +1272,28 @@ function VideoInfoPanel() {
       </div>
       <Separator className="my-4" />
       <div className="flex flex-col gap-2">
-        {["Add to watch later", "Share video", "Open in YouTube"].map((item) => (
-          <Button
-            className="justify-start border-2 border-foreground"
-            key={item}
-            variant="outline"
-          >
-            <ListVideoIcon data-icon="inline-start" />
-            {item}
-          </Button>
-        ))}
+        <Button className="justify-start border-2 border-foreground" variant="outline">
+          <ListVideoIcon data-icon="inline-start" />
+          Add to watch later
+        </Button>
+        <Button
+          className="justify-start border-2 border-foreground"
+          disabled={!videoUrl}
+          onClick={() => void shareVideo()}
+          variant="outline"
+        >
+          <ListVideoIcon data-icon="inline-start" />
+          Share video
+        </Button>
+        <Button
+          className="justify-start border-2 border-foreground"
+          disabled={!videoUrl}
+          onClick={openVideo}
+          variant="outline"
+        >
+          <ListVideoIcon data-icon="inline-start" />
+          Open in YouTube
+        </Button>
       </div>
     </StickerPanel>
   );
