@@ -80,6 +80,11 @@ import {
   ToggleGroupItem,
 } from "@/components/ui/toggle-group";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAuth } from "@/features/auth/use-auth";
+import {
+  createVideoJob,
+  mapCreatedVideoToLibraryVideo,
+} from "@/features/videos/api";
 import {
   categories,
   chatMessages,
@@ -122,6 +127,15 @@ function App() {
 
 function ViduraApp() {
   const currentView = useAppStore((state) => state.currentView);
+  const auth = useAuth();
+
+  if (auth.loading) {
+    return <LoadingScreen />;
+  }
+
+  if (auth.configured && !auth.session) {
+    return <AuthScreen onSignIn={auth.signInWithEmail} />;
+  }
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
@@ -135,9 +149,118 @@ function ViduraApp() {
           {currentView === "chat" ? <ChatScreen standalone /> : null}
           {currentView === "settings" ? <SettingsScreen /> : null}
         </main>
+        {auth.configured ? (
+          <Button
+            className="fixed right-4 top-4 z-40 hidden border-2 border-foreground bg-card lg:inline-flex"
+            onClick={auth.signOut}
+            size="sm"
+            variant="outline"
+          >
+            Sign out
+          </Button>
+        ) : null}
         <MobileNav />
       </div>
     </div>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <main className="grid min-h-dvh place-items-center bg-background p-6">
+      <StickerCard className="w-full max-w-sm">
+        <CardContent className="flex items-center gap-3 p-5">
+          <div className="size-5 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+          <p className="font-black">Loading Vidura...</p>
+        </CardContent>
+      </StickerCard>
+    </main>
+  );
+}
+
+function AuthScreen({
+  onSignIn,
+}: {
+  onSignIn: (email: string) => Promise<void>;
+}) {
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setMessage("");
+    setError("");
+
+    try {
+      await onSignIn(email);
+      setMessage("Check your email for the Vidura sign-in link.");
+    } catch (signInError) {
+      setError(
+        signInError instanceof Error
+          ? signInError.message
+          : "Could not send sign-in link.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="grid min-h-dvh place-items-center bg-background p-6">
+      <StickerCard className="w-full max-w-md">
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="grid size-12 place-items-center rounded-lg border-2 border-foreground bg-vidura-sun shadow-[3px_3px_0_var(--vidura-ink)]">
+              <BookOpenIcon />
+            </div>
+            <div>
+              <CardTitle className="font-display text-4xl font-black">
+                Vidura
+              </CardTitle>
+              <CardDescription>Sign in to save your lessons.</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+            <Field data-invalid={Boolean(error)}>
+              <FieldLabel htmlFor="auth-email">Email</FieldLabel>
+              <InputGroup className="h-12 border-2 border-foreground bg-card">
+                <InputGroupInput
+                  aria-invalid={Boolean(error)}
+                  id="auth-email"
+                  onChange={(event) => {
+                    setEmail(event.target.value);
+                    setError("");
+                    setMessage("");
+                  }}
+                  placeholder="you@example.com"
+                  type="email"
+                  value={email}
+                />
+              </InputGroup>
+              {error ? (
+                <FieldDescription className="font-bold text-destructive">
+                  {error}
+                </FieldDescription>
+              ) : null}
+              {message ? (
+                <FieldDescription className="font-bold text-foreground">
+                  {message}
+                </FieldDescription>
+              ) : null}
+            </Field>
+            <CartoonButton disabled={submitting || !email} type="submit">
+              {submitting ? "Sending link..." : "Send magic link"}
+              <ChevronRightIcon data-icon="inline-end" />
+            </CartoonButton>
+          </form>
+        </CardContent>
+      </StickerCard>
+    </main>
   );
 }
 
@@ -452,10 +575,11 @@ function AddVideoScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [urlError, setUrlError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const addVideo = useAppStore((state) => state.addVideo);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
 
-  function handleStartProcessing(event: FormEvent<HTMLFormElement>) {
+  async function handleStartProcessing(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const parsedUrl = parseYouTubeUrl(youtubeUrl);
@@ -465,23 +589,42 @@ function AddVideoScreen() {
       return;
     }
 
-    const importedVideo = {
-      id: `youtube-${parsedUrl.videoId}`,
-      youtubeVideoId: parsedUrl.videoId,
-      youtubeUrl: parsedUrl.canonicalUrl,
-      title: `YouTube lesson ${parsedUrl.videoId}`,
-      channel: "Pending transcript import",
-      category: "Imported",
-      duration: "--:--",
-      progress: "Queued",
-      status: "queued" as const,
-      accent: "bg-vidura-sky",
-      Icon: LanguagesIcon,
-    };
+    setIsSubmitting(true);
 
-    addVideo(importedVideo);
-    setUrlError("");
-    setIsProcessing(true);
+    try {
+      if (hasSupabaseConfig) {
+        const response = await createVideoJob({
+          youtubeUrl: parsedUrl.canonicalUrl,
+          targetLanguage: "si-LK",
+        });
+        addVideo(mapCreatedVideoToLibraryVideo(response));
+      } else {
+        addVideo({
+          id: `youtube-${parsedUrl.videoId}`,
+          youtubeVideoId: parsedUrl.videoId,
+          youtubeUrl: parsedUrl.canonicalUrl,
+          title: `YouTube lesson ${parsedUrl.videoId}`,
+          channel: "Pending transcript import",
+          category: "Imported",
+          duration: "--:--",
+          progress: "Queued",
+          status: "queued" as const,
+          accent: "bg-vidura-sky",
+          Icon: LanguagesIcon,
+        });
+      }
+
+      setUrlError("");
+      setIsProcessing(true);
+    } catch (createError) {
+      setUrlError(
+        createError instanceof Error
+          ? createError.message
+          : "Could not create the video job.",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   async function pasteFromClipboard() {
@@ -534,44 +677,47 @@ function AddVideoScreen() {
                 </FieldDescription>
               ) : (
                 <FieldDescription>
-                  Supports `youtube.com/watch`, `youtu.be`, Shorts, and embed links.
+                  Supports `youtube.com/watch`, `youtu.be`, Shorts, and embed
+                  links.
                 </FieldDescription>
               )}
             </Field>
-          <div className="flex items-center gap-3">
-            <Separator className="flex-1" />
-            <span className="text-xs font-black uppercase text-foreground/50">
-              or
-            </span>
-            <Separator className="flex-1" />
-          </div>
-          <Field>
-            <FieldLabel>Import transcript optional</FieldLabel>
-            <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-5 text-center">
-              <UploadIcon className="mx-auto mb-3 size-8" />
-              <FieldTitle className="mx-auto">Drop `.srt`, `.vtt`, or `.txt`</FieldTitle>
-              <FieldDescription className="mx-auto max-w-sm text-center">
-                Manual transcripts keep the workflow available when a video has
-                no public captions.
-              </FieldDescription>
-              <Button
-                className="mt-4 border-2 border-foreground"
-                type="button"
-                variant="outline"
-              >
-                Choose file
-              </Button>
+            <div className="flex items-center gap-3">
+              <Separator className="flex-1" />
+              <span className="text-xs font-black uppercase text-foreground/50">
+                or
+              </span>
+              <Separator className="flex-1" />
             </div>
-          </Field>
-          <MascotBubble tone="sun">
-            We will fetch the transcript if available, translate it to Sinhala,
-            and generate synced subtitles.
-          </MascotBubble>
-          <CartoonButton type="submit">
-            Start processing
-            <ChevronRightIcon data-icon="inline-end" />
-          </CartoonButton>
-        </FieldGroup>
+            <Field>
+              <FieldLabel>Import transcript optional</FieldLabel>
+              <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-5 text-center">
+                <UploadIcon className="mx-auto mb-3 size-8" />
+                <FieldTitle className="mx-auto">
+                  Drop `.srt`, `.vtt`, or `.txt`
+                </FieldTitle>
+                <FieldDescription className="mx-auto max-w-sm text-center">
+                  Manual transcripts keep the workflow available when a video
+                  has no public captions.
+                </FieldDescription>
+                <Button
+                  className="mt-4 border-2 border-foreground"
+                  type="button"
+                  variant="outline"
+                >
+                  Choose file
+                </Button>
+              </div>
+            </Field>
+            <MascotBubble tone="sun">
+              We will fetch the transcript if available, translate it to Sinhala,
+              and generate synced subtitles.
+            </MascotBubble>
+            <CartoonButton disabled={isSubmitting} type="submit">
+              {isSubmitting ? "Creating job..." : "Start processing"}
+              <ChevronRightIcon data-icon="inline-end" />
+            </CartoonButton>
+          </FieldGroup>
         </form>
       </StickerPanel>
 
