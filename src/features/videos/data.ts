@@ -11,6 +11,8 @@ export type VideoStatus = "ready" | "processing" | "queued";
 
 export type Video = {
   id: string;
+  youtubeVideoId?: string;
+  youtubeUrl?: string;
   title: string;
   channel: string;
   category: string;
@@ -38,6 +40,7 @@ export type ChatMessage = {
 export const videos: Video[] = [
   {
     id: "quantum",
+    youtubeVideoId: "quantum001",
     title: "Quantum Physics Explained - Simply and Visually",
     channel: "Kurzgesagt - In a Nutshell",
     category: "Physics",
@@ -49,6 +52,7 @@ export const videos: Video[] = [
   },
   {
     id: "relativity",
+    youtubeVideoId: "relativity1",
     title: "The Theory of Relativity - Special Relativity",
     channel: "Veritasium",
     category: "Physics",
@@ -60,6 +64,7 @@ export const videos: Video[] = [
   },
   {
     id: "equations",
+    youtubeVideoId: "equations01",
     title: "The Beauty of Differential Equations",
     channel: "3Blue1Brown",
     category: "Math",
@@ -71,6 +76,7 @@ export const videos: Video[] = [
   },
   {
     id: "black-holes",
+    youtubeVideoId: "blackhole01",
     title: "Black Holes Explained - From Birth to Evaporation",
     channel: "Kurzgesagt - In a Nutshell",
     category: "Space",
@@ -125,7 +131,7 @@ export const chatMessages: ChatMessage[] = [
   },
 ];
 
-export const categories = ["All", "Physics", "Math", "Space", "Biology"];
+export const categories = ["All", "Physics", "Math", "Space", "Imported"];
 
 export const learningStats = [
   { label: "Videos processed", value: "3" },
@@ -156,4 +162,3 @@ export const quickPrompts = [
 ];
 
 export const emptyImportIcon = LanguagesIcon;
-

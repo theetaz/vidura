@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { type FormEvent, useMemo, useState } from "react";
 import {
   BadgeCheckIcon,
   BellIcon,
@@ -9,6 +9,7 @@ import {
   DownloadIcon,
   FilterIcon,
   HomeIcon,
+  LanguagesIcon,
   LinkIcon,
   ListVideoIcon,
   MenuIcon,
@@ -87,10 +88,10 @@ import {
   processingSteps,
   quickPrompts,
   transcript,
-  videos,
 } from "@/features/videos/data";
 import { hasSupabaseConfig } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
+import { parseYouTubeUrl } from "@/lib/youtube";
 import { useAppStore, type AppView } from "@/stores/app-store";
 import {
   CartoonButton,
@@ -286,13 +287,14 @@ function MobileNav() {
 
 function LibraryScreen() {
   const [category, setCategory] = useState("All");
+  const libraryVideos = useAppStore((state) => state.libraryVideos);
   const selectVideo = useAppStore((state) => state.selectVideo);
   const filteredVideos = useMemo(
     () =>
       category === "All"
-        ? videos
-        : videos.filter((video) => video.category === category),
-    [category]
+        ? libraryVideos
+        : libraryVideos.filter((video) => video.category === category),
+    [category, libraryVideos]
   );
 
   return (
@@ -448,7 +450,49 @@ function SearchTools({ compact = false }: { compact?: boolean }) {
 
 function AddVideoScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [urlError, setUrlError] = useState("");
+  const addVideo = useAppStore((state) => state.addVideo);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
+
+  function handleStartProcessing(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const parsedUrl = parseYouTubeUrl(youtubeUrl);
+
+    if (!parsedUrl) {
+      setUrlError("Paste a valid YouTube video, Shorts, embed, or youtu.be link.");
+      return;
+    }
+
+    const importedVideo = {
+      id: `youtube-${parsedUrl.videoId}`,
+      youtubeVideoId: parsedUrl.videoId,
+      youtubeUrl: parsedUrl.canonicalUrl,
+      title: `YouTube lesson ${parsedUrl.videoId}`,
+      channel: "Pending transcript import",
+      category: "Imported",
+      duration: "--:--",
+      progress: "Queued",
+      status: "queued" as const,
+      accent: "bg-vidura-sky",
+      Icon: LanguagesIcon,
+    };
+
+    addVideo(importedVideo);
+    setUrlError("");
+    setIsProcessing(true);
+  }
+
+  async function pasteFromClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setYoutubeUrl(text);
+      setUrlError("");
+    } catch {
+      setUrlError("Clipboard access was not available. Paste the link manually.");
+    }
+  }
 
   if (isProcessing) {
     return <ProcessingScreen onOpenWatch={() => setCurrentView("watch")} />;
@@ -460,22 +504,40 @@ function AddVideoScreen() {
         description="Paste a YouTube link. If captions are missing, import a transcript file."
         title="Add video"
       >
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="youtube-url">YouTube link</FieldLabel>
-            <InputGroup className="h-12 border-2 border-foreground bg-card">
-              <InputGroupInput
-                id="youtube-url"
-                placeholder="Paste YouTube URL here..."
-              />
-              <InputGroupAddon align="inline-end">
-                <InputGroupButton size="icon-sm">
-                  <LinkIcon />
-                  <span className="sr-only">Paste link</span>
-                </InputGroupButton>
-              </InputGroupAddon>
-            </InputGroup>
-          </Field>
+        <form onSubmit={handleStartProcessing}>
+          <FieldGroup>
+            <Field data-invalid={Boolean(urlError)}>
+              <FieldLabel htmlFor="youtube-url">YouTube link</FieldLabel>
+              <InputGroup className="h-12 border-2 border-foreground bg-card">
+                <InputGroupInput
+                  aria-invalid={Boolean(urlError)}
+                  id="youtube-url"
+                  onChange={(event) => {
+                    setYoutubeUrl(event.target.value);
+                    if (urlError) {
+                      setUrlError("");
+                    }
+                  }}
+                  placeholder="Paste YouTube URL here..."
+                  value={youtubeUrl}
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton onClick={pasteFromClipboard} size="icon-sm">
+                    <LinkIcon />
+                    <span className="sr-only">Paste link</span>
+                  </InputGroupButton>
+                </InputGroupAddon>
+              </InputGroup>
+              {urlError ? (
+                <FieldDescription className="font-bold text-destructive">
+                  {urlError}
+                </FieldDescription>
+              ) : (
+                <FieldDescription>
+                  Supports `youtube.com/watch`, `youtu.be`, Shorts, and embed links.
+                </FieldDescription>
+              )}
+            </Field>
           <div className="flex items-center gap-3">
             <Separator className="flex-1" />
             <span className="text-xs font-black uppercase text-foreground/50">
@@ -492,7 +554,11 @@ function AddVideoScreen() {
                 Manual transcripts keep the workflow available when a video has
                 no public captions.
               </FieldDescription>
-              <Button className="mt-4 border-2 border-foreground" variant="outline">
+              <Button
+                className="mt-4 border-2 border-foreground"
+                type="button"
+                variant="outline"
+              >
                 Choose file
               </Button>
             </div>
@@ -501,11 +567,12 @@ function AddVideoScreen() {
             We will fetch the transcript if available, translate it to Sinhala,
             and generate synced subtitles.
           </MascotBubble>
-          <CartoonButton onClick={() => setIsProcessing(true)}>
+          <CartoonButton type="submit">
             Start processing
             <ChevronRightIcon data-icon="inline-end" />
           </CartoonButton>
         </FieldGroup>
+        </form>
       </StickerPanel>
 
       <div className="flex flex-col gap-4">
