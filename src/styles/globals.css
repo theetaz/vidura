@@ -1,0 +1,173 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+    --font-display: var(--font-display);
+    --color-vidura-cream: var(--vidura-cream);
+    --color-vidura-mint: var(--vidura-mint);
+    --color-vidura-sky: var(--vidura-sky);
+    --color-vidura-sun: var(--vidura-sun);
+    --color-vidura-coral: var(--vidura-coral);
+    --color-vidura-purple: var(--vidura-purple);
+    --color-vidura-ink: var(--vidura-ink);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+    --vidura-cream: #fff8e7;
+    --vidura-mint: #aaf0c9;
+    --vidura-sky: #a9d8ff;
+    --vidura-sun: #ffd96a;
+    --vidura-coral: #ff735f;
+    --vidura-purple: #c8b6ff;
+    --vidura-ink: #16120f;
+    --vidura-shadow: #ffb75a;
+    --font-display: Georgia, 'Times New Roman', serif;
+    --background: oklch(0.982 0.029 89.3);
+    --foreground: oklch(0.145 0.018 65.8);
+    --card: oklch(0.998 0.017 91.6);
+    --card-foreground: oklch(0.145 0.018 65.8);
+    --popover: oklch(0.998 0.017 91.6);
+    --popover-foreground: oklch(0.145 0.018 65.8);
+    --primary: oklch(0.765 0.119 174.2);
+    --primary-foreground: oklch(0.145 0.018 65.8);
+    --secondary: oklch(0.922 0.071 85.9);
+    --secondary-foreground: oklch(0.145 0.018 65.8);
+    --muted: oklch(0.936 0.029 84.6);
+    --muted-foreground: oklch(0.421 0.024 67.8);
+    --accent: oklch(0.89 0.097 75.6);
+    --accent-foreground: oklch(0.145 0.018 65.8);
+    --destructive: oklch(0.67 0.184 31.1);
+    --border: oklch(0.145 0.018 65.8);
+    --input: oklch(0.145 0.018 65.8);
+    --ring: oklch(0.725 0.13 174.2);
+    --chart-1: oklch(0.765 0.119 174.2);
+    --chart-2: oklch(0.8 0.136 76);
+    --chart-3: oklch(0.72 0.17 34);
+    --chart-4: oklch(0.79 0.1 245);
+    --chart-5: oklch(0.78 0.11 310);
+    --radius: 0.5rem;
+    --sidebar: oklch(0.982 0.029 89.3);
+    --sidebar-foreground: oklch(0.145 0.018 65.8);
+    --sidebar-primary: oklch(0.765 0.119 174.2);
+    --sidebar-primary-foreground: oklch(0.145 0.018 65.8);
+    --sidebar-accent: oklch(0.922 0.071 85.9);
+    --sidebar-accent-foreground: oklch(0.145 0.018 65.8);
+    --sidebar-border: oklch(0.145 0.018 65.8);
+    --sidebar-ring: oklch(0.725 0.13 174.2);
+}
+
+.dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+    --chart-1: oklch(0.87 0 0);
+    --chart-2: oklch(0.556 0 0);
+    --chart-3: oklch(0.439 0 0);
+    --chart-4: oklch(0.371 0 0);
+    --chart-5: oklch(0.269 0 0);
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    background-image:
+      linear-gradient(rgba(22, 18, 15, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(22, 18, 15, 0.035) 1px, transparent 1px);
+    background-size: 28px 28px;
+    }
+  html {
+    @apply font-sans;
+    }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .vidura-card {
+    transform: rotate(-0.2deg);
+  }
+
+  .vidura-card:nth-child(even) {
+    transform: rotate(0.15deg);
+  }
+
+  .vidura-button {
+    transform: rotate(-0.35deg);
+  }
+
+  .vidura-icon-button {
+    @apply rounded-md border-2 border-foreground bg-card text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint;
+  }
+}

@@ -4,6 +4,8 @@
 .ruff_cache
 .vscode
 .devcontainer
+node_modules/
+.bun/
 __pycache__
 .pytest_cache
 htmlcov
