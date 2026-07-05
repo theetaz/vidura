@@ -251,6 +251,8 @@ export async function fetchChatMessages(
 export async function createVideoJob(input: {
   youtubeUrl: string;
   title?: string;
+  channelTitle?: string;
+  thumbnailUrl?: string;
   targetLanguage?: string;
   segments?: TranscriptSegment[];
 }) {
@@ -261,6 +263,8 @@ export async function createVideoJob(input: {
       body: {
         youtubeUrl: input.youtubeUrl,
         title: input.title,
+        channelTitle: input.channelTitle,
+        thumbnailUrl: input.thumbnailUrl,
         targetLanguage: input.targetLanguage,
         segments: (input.segments ?? []).map((segment) => ({
           startMs: segment.startMs ?? timestampToMilliseconds(segment.time),

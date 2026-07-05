@@ -116,7 +116,7 @@ import {
   type TranscriptSegment,
 } from "@/features/videos/data";
 import { hasSupabaseConfig } from "@/lib/supabase";
-import { parseTranscriptFile } from "@/lib/transcript";
+import { fetchDevYouTubeVideoData, parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import {
   buildYouTubeEmbedUrl,
@@ -788,6 +788,7 @@ function AddVideoScreen() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [urlError, setUrlError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitStep, setSubmitStep] = useState("");
   const [transcriptFileName, setTranscriptFileName] = useState("");
   const [transcriptSegments, setTranscriptSegmentsState] = useState<
     TranscriptSegment[]
@@ -808,12 +809,35 @@ function AddVideoScreen() {
     }
 
     setIsSubmitting(true);
+    setSubmitStep("Preparing video...");
 
     try {
+      let segmentsForJob = transcriptSegments;
+      let devMetadata: {
+        title?: string;
+        channelTitle?: string;
+        thumbnailUrl?: string;
+      } = {};
+
+      if (import.meta.env.DEV && segmentsForJob.length === 0) {
+        setSubmitStep("Fetching transcript locally...");
+        const videoData = await fetchDevYouTubeVideoData(parsedUrl.videoId);
+        segmentsForJob = videoData.segments;
+        devMetadata = videoData.metadata;
+      }
+
+      if (import.meta.env.DEV && segmentsForJob.length === 0) {
+        throw new Error("No transcript segments were found for this video.");
+      }
+
+      setSubmitStep("Creating processing job...");
       const response = await createVideoJob({
         youtubeUrl: parsedUrl.canonicalUrl,
+        title: devMetadata.title,
+        channelTitle: devMetadata.channelTitle,
+        thumbnailUrl: devMetadata.thumbnailUrl,
         targetLanguage: "si-LK",
-        segments: transcriptSegments,
+        segments: segmentsForJob,
       });
 
       setSelectedVideoId(response.video.id);
@@ -829,6 +853,7 @@ function AddVideoScreen() {
       );
     } finally {
       setIsSubmitting(false);
+      setSubmitStep("");
     }
   }
 
@@ -961,7 +986,7 @@ function AddVideoScreen() {
               and generate synced subtitles.
             </MascotBubble>
             <CartoonButton disabled={isSubmitting} type="submit">
-              {isSubmitting ? "Creating job..." : "Start processing"}
+              {isSubmitting ? submitStep || "Creating job..." : "Start processing"}
               <ChevronRightIcon data-icon="inline-end" />
             </CartoonButton>
           </FieldGroup>

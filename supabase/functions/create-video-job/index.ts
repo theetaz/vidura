@@ -8,6 +8,8 @@ declare const EdgeRuntime: {
 type CreateVideoJobBody = {
   youtubeUrl?: string;
   title?: string;
+  channelTitle?: string;
+  thumbnailUrl?: string;
   targetLanguage?: string;
   segments?: TranscriptSegmentInput[];
 };
@@ -103,7 +105,8 @@ Deno.serve(async (request) => {
         youtube_url: parsedUrl.canonicalUrl,
         title: sanitizeTitle(body.title) ??
           `YouTube lesson ${parsedUrl.videoId}`,
-        thumbnail_url:
+        channel_title: sanitizeTitle(body.channelTitle),
+        thumbnail_url: sanitizeUrl(body.thumbnailUrl) ??
           `https://i.ytimg.com/vi/${parsedUrl.videoId}/hqdefault.jpg`,
         target_language: body.targetLanguage ?? "si-LK",
         status: "queued",
@@ -260,6 +263,26 @@ function sanitizeTitle(title: string | undefined) {
   }
 
   return normalizedTitle.slice(0, 180);
+}
+
+function sanitizeUrl(value: string | undefined) {
+  const normalizedValue = value?.trim();
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  try {
+    const url = new URL(normalizedValue);
+
+    if (url.protocol !== "https:") {
+      return null;
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function jsonResponse(body: unknown, status = 200) {

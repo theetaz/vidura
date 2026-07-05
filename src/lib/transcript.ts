@@ -6,6 +6,21 @@ type ParsedCue = {
   text: string;
 };
 
+type YouTubeTranscriptLine = {
+  text?: string;
+  duration?: number;
+  offset?: number;
+};
+
+export type DevYouTubeVideoData = {
+  segments: TranscriptSegment[];
+  metadata: {
+    title?: string;
+    channelTitle?: string;
+    thumbnailUrl?: string;
+  };
+};
+
 export async function parseTranscriptFile(file: File) {
   const text = await file.text();
   const extension = file.name.split(".").pop()?.toLowerCase();
@@ -23,6 +38,69 @@ export async function parseTranscriptFile(file: File) {
   }
 
   throw new Error("Choose a `.srt`, `.vtt`, or `.txt` transcript file.");
+}
+
+export async function fetchDevYouTubeTranscript(videoId: string) {
+  const data = await fetchDevYouTubeVideoData(videoId);
+  return data.segments;
+}
+
+export async function fetchDevYouTubeVideoData(
+  videoId: string,
+): Promise<DevYouTubeVideoData> {
+  if (!import.meta.env.DEV) {
+    return { segments: [], metadata: {} };
+  }
+
+  const response = await fetch(
+    `/api/dev/youtube-transcript?videoId=${encodeURIComponent(videoId)}`,
+  );
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      typeof payload?.error === "string"
+        ? payload.error
+        : "Could not fetch the YouTube transcript locally.",
+    );
+  }
+
+  const transcript: YouTubeTranscriptLine[] = Array.isArray(payload?.transcript)
+    ? payload.transcript
+    : [];
+
+  const metadata = payload?.metadata && typeof payload.metadata === "object"
+    ? payload.metadata
+    : {};
+
+  return {
+    segments: cuesToTranscriptSegments(
+      transcript.flatMap((segment, index): ParsedCue[] => {
+        const startMs = normalizeYouTubeTime(segment?.offset, index * 5000);
+        const durationMs = normalizeYouTubeTime(segment?.duration, 4500);
+        const text = String(segment?.text ?? "").replace(/\s+/g, " ").trim();
+
+        if (!text) {
+          return [];
+        }
+
+        return [{
+          startMs,
+          endMs: Math.max(startMs + 1, startMs + durationMs),
+          text,
+        }];
+      }),
+    ),
+    metadata: {
+      title: typeof metadata.title === "string" ? metadata.title : undefined,
+      channelTitle: typeof metadata.channelTitle === "string"
+        ? metadata.channelTitle
+        : undefined,
+      thumbnailUrl: typeof metadata.thumbnailUrl === "string"
+        ? metadata.thumbnailUrl
+        : undefined,
+    },
+  };
 }
 
 function parseSrt(text: string): ParsedCue[] {
@@ -108,6 +186,19 @@ function plainTextToTranscriptSegments(text: string): TranscriptSegment[] {
       original: line,
       sinhala: line,
     }));
+}
+
+function normalizeYouTubeTime(value: unknown, fallback: number) {
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    return fallback;
+  }
+
+  return Math.max(
+    0,
+    Math.floor(numericValue <= 120 ? numericValue * 1000 : numericValue),
+  );
 }
 
 function formatTimestamp(milliseconds: number) {

@@ -49,7 +49,7 @@ export function isYouTubeVideoId(value?: string): value is string {
 }
 
 export function buildYouTubeEmbedUrl(videoId: string) {
-  return `https://www.youtube-nocookie.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1`;
+  return `https://www.youtube.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1`;
 }
 
 export function buildYouTubeWatchUrl(videoId: string) {
