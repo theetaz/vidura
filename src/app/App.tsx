@@ -119,7 +119,6 @@ import { hasSupabaseConfig } from "@/lib/supabase";
 import { fetchDevYouTubeVideoData, parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import {
-  buildYouTubeEmbedUrl,
   buildYouTubeWatchUrl,
   isYouTubeVideoId,
   parseYouTubeUrl,
@@ -187,6 +186,39 @@ function navPathFor(view: AppView, selectedVideoId: string | null) {
   }
 
   return navItems.find((item) => item.view === view)?.path ?? "/library";
+}
+
+let youtubeIframeApiPromise: Promise<void> | null = null;
+
+function loadYouTubeIframeApi() {
+  if (window.YT?.Player) {
+    return Promise.resolve();
+  }
+
+  if (youtubeIframeApiPromise) {
+    return youtubeIframeApiPromise;
+  }
+
+  youtubeIframeApiPromise = new Promise((resolve, reject) => {
+    const previousReady = window.onYouTubeIframeAPIReady;
+
+    window.onYouTubeIframeAPIReady = () => {
+      previousReady?.();
+      resolve();
+    };
+
+    if (document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://www.youtube.com/iframe_api";
+    script.async = true;
+    script.onerror = () => reject(new Error("Could not load YouTube player."));
+    document.head.append(script);
+  });
+
+  return youtubeIframeApiPromise;
 }
 
 function ViduraApp() {
@@ -1169,9 +1201,11 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   });
   const selectedTranscript = transcriptQuery.data ?? [];
   const activeSubtitle = selectedTranscript[1] ?? selectedTranscript[0];
-  const embedUrl = isYouTubeVideoId(selectedVideo?.youtubeVideoId)
-    ? buildYouTubeEmbedUrl(selectedVideo.youtubeVideoId)
+  const youtubeVideoId = isYouTubeVideoId(selectedVideo?.youtubeVideoId)
+    ? selectedVideo.youtubeVideoId
     : null;
+  const videoWatchUrl = selectedVideo?.youtubeUrl ??
+    (youtubeVideoId ? buildYouTubeWatchUrl(youtubeVideoId) : null);
 
   useEffect(() => {
     if (selectedVideo?.id && selectedVideo.id !== storedSelectedVideoId) {
@@ -1221,13 +1255,12 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
         </div>
         <StickerCard className="overflow-hidden bg-vidura-ink p-0">
           <div className="relative aspect-video overflow-hidden bg-vidura-ink">
-            {embedUrl ? (
-              <iframe
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowFullScreen
-                className="absolute inset-0 size-full border-0"
-                src={embedUrl}
+            {youtubeVideoId ? (
+              <YouTubePlayerFrame
+                key={youtubeVideoId}
                 title={selectedVideo.title}
+                videoId={youtubeVideoId}
+                watchUrl={videoWatchUrl}
               />
             ) : (
               <>
@@ -1243,7 +1276,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
               <div
                 className={cn(
                   "absolute inset-x-4 mx-auto max-w-3xl rounded-md border-2 border-white px-3 py-2 text-center font-black leading-snug text-white shadow-[4px_4px_0_#000]",
-                  embedUrl ? "bottom-6" : "bottom-14",
+                  youtubeVideoId ? "bottom-6" : "bottom-14",
                 )}
                 style={{
                   backgroundColor: `rgb(17 24 39 / ${subtitleOpacity / 100})`,
@@ -1254,7 +1287,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
                   "Sinhala subtitles will appear after transcript processing."}
               </div>
             ) : null}
-            {!embedUrl ? (
+            {!youtubeVideoId ? (
               <div className="absolute inset-x-4 bottom-4 flex items-center gap-3 text-white">
                 <CirclePlayIcon className="size-5" />
                 <div className="h-2 flex-1 rounded-full bg-white/25">
@@ -1278,6 +1311,98 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
         <VideoInfoPanel video={selectedVideo} />
       </aside>
     </section>
+  );
+}
+
+function YouTubePlayerFrame({
+  title,
+  videoId,
+  watchUrl,
+}: {
+  title: string;
+  videoId: string;
+  watchUrl: string | null;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const playerRef = useRef<YouTubePlayerInstance | null>(null);
+  const [playerError, setPlayerError] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadYouTubeIframeApi()
+      .then(() => {
+        if (cancelled || !containerRef.current || !window.YT?.Player) {
+          return;
+        }
+
+        playerRef.current?.destroy();
+        playerRef.current = new window.YT.Player(containerRef.current, {
+          width: "100%",
+          height: "100%",
+          videoId,
+          playerVars: {
+            enablejsapi: 1,
+            modestbranding: 1,
+            origin: window.location.origin,
+            playsinline: 1,
+            rel: 0,
+          },
+          events: {
+            onError: (event) => {
+              if ([2, 5, 100, 101, 150].includes(event.data)) {
+                setPlayerError(event.data);
+              }
+            },
+          },
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPlayerError(0);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      playerRef.current?.destroy();
+      playerRef.current = null;
+    };
+  }, [videoId]);
+
+  return (
+    <>
+      <div
+        aria-label={title}
+        className={cn(
+          "absolute inset-0 [&>iframe]:absolute [&>iframe]:inset-0 [&>iframe]:size-full",
+          playerError ? "pointer-events-none opacity-0" : null,
+        )}
+        ref={containerRef}
+      />
+      {playerError ? (
+        <div className="absolute inset-0 grid place-items-center bg-vidura-ink p-6 text-center text-white">
+          <div className="max-w-sm">
+            <div className="mx-auto grid size-16 place-items-center rounded-full border-2 border-white/70 text-white/80">
+              <CirclePlayIcon className="size-8" />
+            </div>
+            <h3 className="mt-4 text-2xl font-black">Playback blocked here</h3>
+            <p className="mt-2 text-sm font-bold text-white/70">
+              This video can only be watched on YouTube.
+            </p>
+            <Button
+              asChild
+              className="mt-5 border-2 border-white bg-vidura-sun text-foreground hover:bg-vidura-sun/90"
+            >
+              <a href={watchUrl ?? buildYouTubeWatchUrl(videoId)} rel="noreferrer" target="_blank">
+                <LinkIcon data-icon="inline-start" />
+                Open on YouTube
+              </a>
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
