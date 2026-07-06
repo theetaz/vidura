@@ -264,7 +264,7 @@ function ViduraApp() {
     <div className="min-h-dvh bg-background text-foreground">
       <div className="mx-auto flex min-h-dvh w-full max-w-[1760px] flex-col lg:flex-row">
         <DesktopSidebar />
-        <main className="min-w-0 flex-1 px-4 pb-36 pt-4 sm:px-6 lg:px-6 lg:pb-7 xl:px-7">
+        <main className="min-w-0 flex-1 px-4 pb-36 pt-4 sm:px-6 sm:pb-40 lg:px-6 lg:pb-7 xl:px-7">
           <TopBar />
           <Routes>
             <Route element={<Navigate replace to="/library" />} path="/" />
@@ -652,22 +652,22 @@ function MobileNav() {
   const currentView = viewFromPath(location.pathname);
 
   return (
-    <nav className="fixed inset-x-3 bottom-3 z-40 rounded-lg border-2 border-foreground bg-card px-2 py-1.5 shadow-[4px_4px_0_var(--vidura-ink)] lg:hidden">
-      <div className="grid grid-cols-5 gap-1">
+    <nav className="fixed inset-x-3 bottom-3 z-40 rounded-lg border-2 border-foreground bg-card px-2 py-1.5 shadow-[4px_4px_0_var(--vidura-ink)] sm:inset-x-4 sm:bottom-4 sm:px-2.5 lg:hidden">
+      <div className="grid grid-cols-5 gap-1 sm:gap-1.5">
         {navItems.map(({ view, label, Icon }) => (
           <Button
             asChild
             className={cn(
-              "h-12 flex-col gap-0.5 rounded-md px-1 text-[0.66rem] font-bold",
+              "h-12 flex-col gap-0.5 rounded-md px-1 text-[0.66rem] font-bold sm:h-13 sm:text-[0.7rem]",
               currentView === view &&
                 "border-2 border-foreground bg-vidura-mint text-foreground hover:bg-vidura-mint"
             )}
             key={view}
             variant="ghost"
           >
-            <NavLink to={navPathFor(view, selectedVideoId)}>
-              <Icon data-icon="inline-start" />
-              {label}
+            <NavLink className="flex flex-col items-center justify-center" to={navPathFor(view, selectedVideoId)}>
+              <Icon className="size-4 sm:size-4.5" data-icon="inline-start" />
+              <span className="truncate">{label}</span>
             </NavLink>
           </Button>
         ))}
