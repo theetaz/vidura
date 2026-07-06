@@ -886,7 +886,14 @@ function LibraryScreen({
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-foreground/65">
                     <Badge variant="secondary">{video.category}</Badge>
-                    <span>{video.latestJob?.status ?? video.status}</span>
+                    {isVideoStillProcessing(video) ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-md border border-foreground bg-vidura-sun px-2 py-1 text-foreground">
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                        {video.latestJob?.status ?? video.status}
+                      </span>
+                    ) : (
+                      <span>{video.latestJob?.status ?? video.status}</span>
+                    )}
                     <span>
                       {(video.latestJob?.metadata.stage as string | undefined) ??
                         "created"}
@@ -901,7 +908,14 @@ function LibraryScreen({
                       : "bg-vidura-sun text-foreground"
                   )}
                 >
-                  {video.progress}
+                  {isVideoStillProcessing(video) ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                      {video.progress}
+                    </span>
+                  ) : (
+                    video.progress
+                  )}
                 </Badge>
               </CardContent>
             </StickerCard>
