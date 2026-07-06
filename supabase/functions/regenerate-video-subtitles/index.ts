@@ -9,6 +9,7 @@ type RegenerateVideoSubtitlesBody = {
   videoId?: string;
   targetLanguage?: string;
   rebuildContext?: boolean;
+  regenerateTranscript?: boolean;
 };
 
 const corsHeaders = {
@@ -89,7 +90,9 @@ Deno.serve(async (request) => {
     return jsonResponse({ error: "Failed to read transcript segments" }, 500);
   }
 
-  if (!transcriptCount || transcriptCount === 0) {
+  // A missing transcript only blocks subtitle-only regeneration; a full
+  // transcript regeneration refetches it from YouTube anyway.
+  if (!body.regenerateTranscript && (!transcriptCount || transcriptCount === 0)) {
     return jsonResponse(
       { error: "This video has no transcript to regenerate subtitles from." },
       400,
@@ -126,6 +129,7 @@ Deno.serve(async (request) => {
         stage: "queued",
         requested_language_code: targetLanguage,
         regenerate: true,
+        regenerate_transcript: body.regenerateTranscript ?? false,
         rebuild_context: body.rebuildContext ?? true,
       },
     })
@@ -142,7 +146,7 @@ Deno.serve(async (request) => {
   await serviceClient
     .from("videos")
     .update({
-      status: "translating",
+      status: body.regenerateTranscript ? "fetching_transcript" : "translating",
       error_message: null,
     })
     .eq("id", video.id);
@@ -155,6 +159,7 @@ Deno.serve(async (request) => {
       jobId: job.id,
       targetLanguage,
       rebuildContext: body.rebuildContext ?? true,
+      regenerateTranscript: body.regenerateTranscript ?? false,
     }),
   );
 
@@ -168,6 +173,7 @@ async function startProcessingJob(input: {
   jobId: string;
   targetLanguage: string;
   rebuildContext: boolean;
+  regenerateTranscript: boolean;
 }) {
   try {
     const response = await fetch(
@@ -186,6 +192,7 @@ async function startProcessingJob(input: {
           segments: [],
           forceRetranslate: true,
           rebuildContext: input.rebuildContext,
+          forceRefetchTranscript: input.regenerateTranscript,
         }),
       },
     );

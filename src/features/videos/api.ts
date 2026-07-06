@@ -338,6 +338,7 @@ export async function regenerateSubtitles(input: {
   videoId: string;
   targetLanguage?: string;
   rebuildContext?: boolean;
+  regenerateTranscript?: boolean;
 }) {
   const client = requireSupabase();
   const { data, error } = await client.functions.invoke<RegenerateSubtitlesResponse>(
@@ -347,6 +348,7 @@ export async function regenerateSubtitles(input: {
         videoId: input.videoId,
         targetLanguage: input.targetLanguage ?? "si-LK",
         rebuildContext: input.rebuildContext ?? true,
+        regenerateTranscript: input.regenerateTranscript ?? false,
       },
     },
   );

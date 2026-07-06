@@ -1,6 +1,7 @@
 import {
   type ChangeEvent,
   type FormEvent,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -313,18 +314,19 @@ function ViduraApp() {
 }
 
 function useLibraryVideos(enabled: boolean) {
+  // Realtime (useVideoRealtime) is the primary update signal; polling is only
+  // a safety net for missed events, so keep it slow to avoid competing
+  // request storms while jobs are running.
   return useQuery({
     queryKey: videoQueryKeys.all,
     queryFn: fetchLibraryVideos,
     enabled,
     refetchInterval: (query) =>
       hasActiveVideoJob(query.state.data as LibraryVideo[] | undefined)
-        ? 1_000
-        : 15_000,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: "always",
+        ? 5_000
+        : false,
+    refetchOnWindowFocus: true,
     refetchOnReconnect: "always",
-    staleTime: 0,
   });
 }
 
@@ -1389,7 +1391,8 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
     queryKey: videoQueryKeys.transcript(selectedVideo?.id ?? null),
     queryFn: () => fetchVideoTranscript(selectedVideo?.id ?? null),
     enabled: Boolean(selectedVideo),
-    refetchInterval: isVideoStillProcessing(selectedVideo) ? 2_000 : false,
+    // Fallback only — realtime pushes transcript updates as they land.
+    refetchInterval: isVideoStillProcessing(selectedVideo) ? 5_000 : false,
   });
   const selectedTranscript = transcriptQuery.data ?? [];
   const subtitlesStillLoading = transcriptQuery.isPending ||
@@ -1885,7 +1888,10 @@ function YouTubePlayerFrame({
   );
 }
 
-function TranscriptPanel({
+// Memoized: WatchScreen re-renders 4x/second while the player reports playback
+// time; these panels only depend on videoId/activeSegmentId and must not
+// re-render with it.
+const TranscriptPanel = memo(function TranscriptPanel({
   activeSegmentId,
   isProcessing = false,
   videoId,
@@ -1898,24 +1904,38 @@ function TranscriptPanel({
   const transcriptQuery = useQuery({
     queryKey: videoQueryKeys.transcript(videoId),
     queryFn: () => fetchVideoTranscript(videoId),
-    refetchInterval: isProcessing ? 2_000 : false,
+    // Fallback only — realtime pushes transcript updates as they land.
+    refetchInterval: isProcessing ? 5_000 : false,
   });
+  const invalidateAfterRegenerate = async () => {
+    await queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
+    await queryClient.invalidateQueries({
+      queryKey: videoQueryKeys.transcript(videoId),
+    });
+  };
   const regenerateMutation = useMutation({
     mutationFn: () =>
       regenerateSubtitles({
         videoId,
         rebuildContext: true,
       }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
-      await queryClient.invalidateQueries({
-        queryKey: videoQueryKeys.transcript(videoId),
-      });
-    },
+    onSuccess: invalidateAfterRegenerate,
+  });
+  const regenerateTranscriptMutation = useMutation({
+    mutationFn: () =>
+      regenerateSubtitles({
+        videoId,
+        rebuildContext: true,
+        regenerateTranscript: true,
+      }),
+    onSuccess: invalidateAfterRegenerate,
   });
   const selectedTranscript = transcriptQuery.data ?? [];
   const isLoading = transcriptQuery.isPending || transcriptQuery.isFetching;
-  const isRegenerating = regenerateMutation.isPending || isProcessing;
+  const isRegenerating = regenerateMutation.isPending ||
+    regenerateTranscriptMutation.isPending || isProcessing;
+  const regenerateError = regenerateMutation.error ??
+    regenerateTranscriptMutation.error;
 
   return (
     <StickerCard>
@@ -1931,35 +1951,55 @@ function TranscriptPanel({
                 <TabsTrigger value="bilingual">Bilingual</TabsTrigger>
               </TabsList>
             </div>
-            <Button
-              className="w-full border-2 border-foreground sm:w-auto sm:self-start"
-              disabled={isRegenerating || selectedTranscript.length === 0}
-              onClick={() => {
-                regenerateMutation.mutate();
-              }}
-              size="sm"
-              variant="outline"
-            >
-              {regenerateMutation.isPending ? (
-                <Loader2Icon className="animate-spin" data-icon="inline-start" />
-              ) : (
-                <RefreshCwIcon data-icon="inline-start" />
-              )}
-              Regenerate subtitles
-            </Button>
+            <div className="flex flex-col gap-2 sm:flex-row sm:self-start">
+              <Button
+                className="w-full border-2 border-foreground sm:w-auto"
+                disabled={isRegenerating || selectedTranscript.length === 0}
+                onClick={() => {
+                  regenerateMutation.mutate();
+                }}
+                size="sm"
+                variant="outline"
+              >
+                {regenerateMutation.isPending ? (
+                  <Loader2Icon className="animate-spin" data-icon="inline-start" />
+                ) : (
+                  <RefreshCwIcon data-icon="inline-start" />
+                )}
+                Regenerate subtitles
+              </Button>
+              <Button
+                className="w-full border-2 border-foreground sm:w-auto"
+                disabled={isRegenerating}
+                onClick={() => {
+                  regenerateTranscriptMutation.mutate();
+                }}
+                size="sm"
+                variant="outline"
+              >
+                {regenerateTranscriptMutation.isPending ? (
+                  <Loader2Icon className="animate-spin" data-icon="inline-start" />
+                ) : (
+                  <ListVideoIcon data-icon="inline-start" />
+                )}
+                Regenerate transcript
+              </Button>
+            </div>
           </div>
-          {regenerateMutation.isError ? (
+          {regenerateError ? (
             <p className="mt-2 text-sm font-semibold text-vidura-coral">
-              {regenerateMutation.error instanceof Error
-                ? regenerateMutation.error.message
-                : "Could not regenerate subtitles."}
+              {regenerateError instanceof Error
+                ? regenerateError.message
+                : "Could not start regeneration."}
             </p>
           ) : null}
           {isLoading || isRegenerating ? (
             <div className="mt-3">
               <InlineLoadingNotice
                 label={
-                  regenerateMutation.isPending
+                  regenerateTranscriptMutation.isPending
+                    ? "Refetching the transcript and rebuilding subtitles..."
+                    : regenerateMutation.isPending
                     ? "Rebuilding Sinhala subtitles with full video context..."
                     : isLoading
                     ? "Loading Sinhala subtitles..."
@@ -1995,9 +2035,9 @@ function TranscriptPanel({
       </Tabs>
     </StickerCard>
   );
-}
+});
 
-function TranscriptRows({
+const TranscriptRows = memo(function TranscriptRows({
   activeSegmentId,
   isLoading = false,
   mode,
@@ -2060,9 +2100,9 @@ function TranscriptRows({
       </div>
     </ScrollArea>
   );
-}
+});
 
-function ChatPanel({ videoId }: { videoId: string }) {
+const ChatPanel = memo(function ChatPanel({ videoId }: { videoId: string }) {
   const [draft, setDraft] = useState("");
   const queryClient = useQueryClient();
   const transcriptQuery = useQuery({
@@ -2191,7 +2231,7 @@ function ChatPanel({ videoId }: { videoId: string }) {
       </CardContent>
     </StickerCard>
   );
-}
+});
 
 function ChatScreen({
   standalone = false,

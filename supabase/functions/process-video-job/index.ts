@@ -19,6 +19,7 @@ type ProcessVideoJobBody = {
   segments?: TranscriptSegmentInput[];
   forceRetranslate?: boolean;
   rebuildContext?: boolean;
+  forceRefetchTranscript?: boolean;
 };
 
 type TranslationResult = {
@@ -265,6 +266,22 @@ Deno.serve(async (request) => {
 
     const sourceLanguage = body.sourceLanguage ?? "en";
     const targetLanguage = body.targetLanguage ?? "si-LK";
+
+    if (body.forceRefetchTranscript) {
+      await updateJobState(serviceClient, job.id, job.video_id, {
+        jobStatus: "running",
+        videoStatus: "fetching_transcript",
+        progress: 2,
+        metadata: {
+          stage: "clearing_transcript",
+          translated_segments: 0,
+        },
+      });
+
+      // Translated segments cascade-delete with their transcript segments.
+      await deleteTranscriptSegments(serviceClient, job.video_id);
+    }
+
     const existingStoredSegments = await fetchStoredTranscriptSegments(
       serviceClient,
       job.video_id,
@@ -1006,6 +1023,20 @@ function storedSegmentsToNormalized(
       text: segment.text,
     }];
   });
+}
+
+async function deleteTranscriptSegments(
+  serviceClient: ServiceClient,
+  videoId: string,
+) {
+  const { error } = await serviceClient
+    .from("transcript_segments")
+    .delete()
+    .eq("video_id", videoId);
+
+  if (error) {
+    throw new Error("Failed to clear existing transcript segments");
+  }
 }
 
 async function deleteTranslatedSegments(
