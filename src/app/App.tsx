@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { User } from "@supabase/supabase-js";
 import {
   Navigate,
   NavLink,
@@ -31,6 +32,7 @@ import {
   HomeIcon,
   LinkIcon,
   ListVideoIcon,
+  LogOutIcon,
   MenuIcon,
   MessageCircleIcon,
   MoreHorizontalIcon,
@@ -86,6 +88,7 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
@@ -475,6 +478,89 @@ function TopBar() {
         </SheetContent>
       </Sheet>
     </header>
+  );
+}
+
+function getUserDisplayName(user: User | null) {
+  if (!user) {
+    return "Guest";
+  }
+
+  const metadata = user.user_metadata;
+
+  if (typeof metadata?.full_name === "string" && metadata.full_name.trim()) {
+    return metadata.full_name.trim();
+  }
+
+  if (typeof metadata?.name === "string" && metadata.name.trim()) {
+    return metadata.name.trim();
+  }
+
+  return user.email?.split("@")[0] ?? "User";
+}
+
+function getUserInitials(user: User | null) {
+  const displayName = getUserDisplayName(user);
+  const parts = displayName.split(/\s+/).filter(Boolean);
+
+  if (parts.length >= 2) {
+    return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+  }
+
+  return displayName.slice(0, 2).toUpperCase();
+}
+
+function SidebarProfileFooter({
+  user,
+  onSignOut,
+  className,
+}: {
+  user: User | null;
+  onSignOut: () => Promise<void>;
+  className?: string;
+}) {
+  const [signingOut, setSigningOut] = useState(false);
+  const displayName = getUserDisplayName(user);
+  const email = user?.email ?? "Signed in";
+
+  async function handleSignOut() {
+    setSigningOut(true);
+
+    try {
+      await onSignOut();
+    } finally {
+      setSigningOut(false);
+    }
+  }
+
+  return (
+    <div className={cn("flex flex-col gap-2.5", className)}>
+      <div className="flex items-center gap-2.5 rounded-lg border-2 border-foreground bg-card p-2.5 shadow-[3px_3px_0_var(--vidura-ink)]">
+        <Avatar className="size-9 shrink-0 border-2 border-foreground bg-vidura-purple">
+          <AvatarFallback className="bg-transparent text-xs font-black text-foreground">
+            {getUserInitials(user)}
+          </AvatarFallback>
+        </Avatar>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-black leading-tight">{displayName}</p>
+          <p className="truncate text-[0.68rem] font-semibold text-foreground/55">
+            {email}
+          </p>
+        </div>
+      </div>
+      <Button
+        className="h-9 w-full justify-start rounded-md border-2 border-foreground bg-card px-2.5 text-sm font-bold shadow-[2px_2px_0_var(--vidura-ink)] hover:bg-vidura-coral/15"
+        disabled={signingOut}
+        onClick={() => {
+          void handleSignOut();
+        }}
+        size="sm"
+        variant="outline"
+      >
+        <LogOutIcon data-icon="inline-start" />
+        {signingOut ? "Signing out..." : "Sign out"}
+      </Button>
+    </div>
   );
 }
 
