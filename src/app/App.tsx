@@ -334,15 +334,6 @@ function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {
   }) ?? false;
 }
 
-function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {
-  return videos?.some((video) => {
-    const jobStatus = video.latestJob?.status;
-
-    return video.status !== "ready" || jobStatus === "queued" ||
-      jobStatus === "running";
-  }) ?? false;
-}
-
 function isVideoStillProcessing(video: LibraryVideo | null | undefined) {
   if (!video) {
     return false;
