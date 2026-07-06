@@ -565,14 +565,15 @@ function SidebarProfileFooter({
 }
 
 function DesktopSidebar() {
+  const auth = useAuth();
   const location = useLocation();
   const selectedVideoId = useAppStore((state) => state.selectedVideoId);
   const currentView = viewFromPath(location.pathname);
 
   return (
-    <aside className="sticky top-0 hidden h-dvh w-[216px] shrink-0 border-r-2 border-foreground bg-background px-4 py-5 lg:block 2xl:w-[224px]">
-      <div className="flex h-full flex-col gap-5">
-        <div>
+    <aside className="sticky top-0 hidden h-dvh w-[216px] shrink-0 border-r-2 border-foreground bg-background lg:block 2xl:w-[224px]">
+      <div className="flex h-full flex-col px-4 py-5">
+        <div className="shrink-0">
           <div className="flex items-center gap-2.5">
             <div className="grid size-12 place-items-center rounded-lg border-2 border-foreground bg-vidura-sun shadow-[3px_3px_0_var(--vidura-ink)]">
               <BookOpenIcon />
@@ -587,7 +588,7 @@ function DesktopSidebar() {
             </div>
           </div>
         </div>
-        <nav className="flex flex-col gap-1.5">
+        <nav className="mt-5 flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto py-1">
           {navItems.map(({ view, label, Icon }) => (
             <Button
               asChild
@@ -606,21 +607,29 @@ function DesktopSidebar() {
             </Button>
           ))}
         </nav>
-        <div className="rounded-lg border-2 border-foreground bg-card p-3 shadow-[3px_3px_0_var(--vidura-ink)]">
-          <div className="mb-2 flex items-center gap-2">
-            <div className="grid size-8 place-items-center rounded-md border-2 border-foreground bg-vidura-sun">
-              <BadgeCheckIcon />
+        <div className="mt-auto flex shrink-0 flex-col gap-4 pt-4">
+          <div className="rounded-lg border-2 border-foreground bg-card p-3 shadow-[3px_3px_0_var(--vidura-ink)]">
+            <div className="mb-2 flex items-center gap-2">
+              <div className="grid size-8 place-items-center rounded-md border-2 border-foreground bg-vidura-sun">
+                <BadgeCheckIcon />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-black leading-none">Level 3</p>
+                <p className="text-[0.68rem] font-bold text-foreground/55">
+                  Study sync
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-black leading-none">Level 3</p>
-              <p className="text-[0.68rem] font-bold text-foreground/55">
-                Study sync
-              </p>
-            </div>
+            <p className="text-xs font-semibold leading-snug text-foreground/65">
+              Library updates live from Supabase.
+            </p>
           </div>
-          <p className="mt-2 text-xs font-semibold leading-snug text-foreground/65">
-            Library updates live from Supabase.
-          </p>
+          {auth.configured && auth.user ? (
+            <>
+              <Separator className="bg-foreground/15" />
+              <SidebarProfileFooter onSignOut={auth.signOut} user={auth.user} />
+            </>
+          ) : null}
         </div>
       </div>
     </aside>
