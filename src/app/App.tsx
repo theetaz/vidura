@@ -32,8 +32,11 @@ import {
   HomeIcon,
   LinkIcon,
   ListVideoIcon,
+  Loader2Icon,
   LogOutIcon,
+  Maximize2Icon,
   MenuIcon,
+  Minimize2Icon,
   MessageCircleIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -329,6 +332,35 @@ function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {
     return video.status !== "ready" || jobStatus === "queued" ||
       jobStatus === "running";
   }) ?? false;
+}
+
+function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {
+  return videos?.some((video) => {
+    const jobStatus = video.latestJob?.status;
+
+    return video.status !== "ready" || jobStatus === "queued" ||
+      jobStatus === "running";
+  }) ?? false;
+}
+
+function isVideoStillProcessing(video: LibraryVideo | null | undefined) {
+  if (!video) {
+    return false;
+  }
+
+  const jobStatus = video.latestJob?.status;
+
+  return video.status !== "ready" || jobStatus === "queued" ||
+    jobStatus === "running";
+}
+
+function InlineLoadingNotice({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 text-sm font-black text-foreground/65">
+      <Loader2Icon className="size-4 shrink-0 animate-spin" />
+      <span>{label}</span>
+    </div>
+  );
 }
 
 function LoadingScreen() {
@@ -1390,7 +1422,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             {subtitleEnabled ? (
               <div
                 className={cn(
-                  "absolute inset-x-3 mx-auto max-w-[min(88%,720px)] rounded-md border-2 border-white px-2.5 py-1.5 text-center font-black leading-tight text-white shadow-[4px_4px_0_#000] sm:px-3 sm:py-2 sm:leading-snug",
+                  "pointer-events-none absolute inset-x-3 z-10 mx-auto max-w-[min(88%,720px)] rounded-md border-2 border-white px-2.5 py-1.5 text-center font-black leading-tight text-white shadow-[4px_4px_0_#000] sm:px-3 sm:py-2 sm:leading-snug",
                   youtubeVideoId ? "bottom-3 sm:bottom-5" : "bottom-12",
                 )}
                 style={{
@@ -1578,7 +1610,7 @@ function YouTubePlayerFrame({
       <div
         aria-label={title}
         className={cn(
-          "absolute inset-0 [&>iframe]:absolute [&>iframe]:inset-0 [&>iframe]:size-full",
+          "absolute inset-0 z-0 [&>iframe]:pointer-events-auto [&>iframe]:absolute [&>iframe]:inset-0 [&>iframe]:size-full",
           playerError ? "pointer-events-none opacity-0" : null,
         )}
         ref={containerRef}
