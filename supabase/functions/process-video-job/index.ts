@@ -174,6 +174,22 @@ const corsHeaders = {
 
 const openRouterUrl = "https://openrouter.ai/api/v1/chat/completions";
 
+// Supabase Edge Functions are hard-killed at the wall-clock limit (~150s)
+// without running catch blocks, which previously left jobs stuck at
+// "running". Stop starting new work after this budget and chain a fresh
+// invocation instead, keeping every invocation far below the kill limit.
+const INVOCATION_TIME_BUDGET_MS = 45_000;
+
+// Per-LLM-call timeout. A hung upstream connection previously stalled the
+// invocation until the runtime killed it silently.
+const OPENROUTER_TIMEOUT_MS = 40_000;
+
+// Segments per LLM call: large enough for passage-level Sinhala flow (the
+// full transcript plus prior translations carry the context), small enough
+// that each call reliably completes within the timeout and progress updates
+// stay granular.
+const TRANSLATION_BATCH_SIZE = 20;
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -200,6 +216,7 @@ Deno.serve(async (request) => {
     );
   }
 
+  const invocationStartedAt = Date.now();
   const authorization = request.headers.get("Authorization");
 
   if (!authorization) {
@@ -219,17 +236,10 @@ Deno.serve(async (request) => {
     );
   }
 
-  const authClient = createClient(supabaseUrl, supabaseAnonKey, {
-    global: { headers: { Authorization: authorization } },
-  });
-  const {
-    data: { user },
-    error: userError,
-  } = await authClient.auth.getUser();
-
-  if (userError || !user) {
-    return jsonResponse({ error: "Invalid user session" }, 401);
-  }
+  // Chained invocations authenticate with the service role key so that
+  // long-running jobs cannot die when the original user JWT expires.
+  const isServiceInvocation =
+    authorization === `Bearer ${supabaseServiceRoleKey}`;
 
   const serviceClient: ServiceClient = createClient<Database>(
     supabaseUrl,
@@ -242,12 +252,28 @@ Deno.serve(async (request) => {
     },
   );
 
-  const { data: job, error: jobError } = await serviceClient
+  let jobQuery = serviceClient
     .from("processing_jobs")
     .select("id, owner_id, video_id")
-    .eq("id", body.jobId)
-    .eq("owner_id", user.id)
-    .single();
+    .eq("id", body.jobId);
+
+  if (!isServiceInvocation) {
+    const authClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authorization } },
+    });
+    const {
+      data: { user },
+      error: userError,
+    } = await authClient.auth.getUser();
+
+    if (userError || !user) {
+      return jsonResponse({ error: "Invalid user session" }, 401);
+    }
+
+    jobQuery = jobQuery.eq("owner_id", user.id);
+  }
+
+  const { data: job, error: jobError } = await jobQuery.single();
 
   if (jobError || !job) {
     return jsonResponse({ error: "Processing job not found" }, 404);
@@ -466,7 +492,6 @@ Deno.serve(async (request) => {
       },
     });
 
-    const segmentsForThisInvocation = untranslatedSegments.slice(0, 100);
     const translations = await translateBatches({
       serviceClient,
       jobId: job.id,
@@ -476,7 +501,7 @@ Deno.serve(async (request) => {
       model: openRouterModel,
       apiKey: openRouterApiKey,
       storedSegments,
-      segments: segmentsForThisInvocation,
+      segments: untranslatedSegments,
       allSegments: transcriptSegments,
       translationContext,
       videoTitle: videoDetails?.title ?? null,
@@ -484,6 +509,10 @@ Deno.serve(async (request) => {
       existingTranslations,
       totalSegments: transcriptSegments.length,
       initialTranslatedSegments: translatedCount,
+      // Stop starting new batches once the invocation budget is spent; the
+      // remainder is handed to a chained invocation below.
+      hasTimeBudget: () =>
+        Date.now() - invocationStartedAt < INVOCATION_TIME_BUDGET_MS,
     });
     const nextTranslatedCount = translatedCount + translations.length;
 
@@ -506,7 +535,9 @@ Deno.serve(async (request) => {
 
       EdgeRuntime.waitUntil(
         startNextProcessingInvocation({
-          authorization,
+          // Chain with the service role key: user JWTs expire mid-job on
+          // long videos, which silently killed the chain.
+          authorization: `Bearer ${supabaseServiceRoleKey}`,
           supabaseUrl,
           supabaseAnonKey,
           jobId: job.id,
@@ -1288,6 +1319,31 @@ async function requestOpenRouterJson<T>(input: {
   user: Record<string, unknown>;
   temperature?: number;
 }) {
+  let lastError: unknown = null;
+
+  // One retry: a single flaky upstream response must not fail the whole job,
+  // but persistent failures must surface quickly instead of hanging until
+  // the runtime kills the invocation.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await requestOpenRouterJsonOnce<T>(input);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("OpenRouter request failed");
+}
+
+async function requestOpenRouterJsonOnce<T>(input: {
+  apiKey: string;
+  model: string;
+  system: string;
+  user: Record<string, unknown>;
+  temperature?: number;
+}) {
   const response = await fetch(openRouterUrl, {
     method: "POST",
     headers: {
@@ -1308,6 +1364,7 @@ async function requestOpenRouterJson<T>(input: {
       temperature: input.temperature ?? 0.2,
       response_format: { type: "json_object" },
     }),
+    signal: AbortSignal.timeout(OPENROUTER_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -1401,18 +1458,23 @@ async function translateBatches(input: {
   existingTranslations: Map<number, string>;
   totalSegments: number;
   initialTranslatedSegments: number;
+  hasTimeBudget: () => boolean;
 }) {
-  // Translate the whole invocation slice in one call so the model composes
-  // long continuous Sinhala passages instead of 12-line snippets.
-  const batches = chunkSegments(input.segments, 100).map((segments, index) => ({
-    index,
-    segments,
-  }));
+  const batches = chunkSegments(input.segments, TRANSLATION_BATCH_SIZE).map(
+    (segments, index) => ({
+      index,
+      segments,
+    }),
+  );
   const translations: TranslationResult[] = [];
   const translationsByIndex = new Map(input.existingTranslations);
   let translatedSegments = input.initialTranslatedSegments;
 
   for (const batch of batches) {
+    if (!input.hasTimeBudget()) {
+      break;
+    }
+
     const currentSegment = batch.segments[0];
 
     await updateJobState(input.serviceClient, input.jobId, input.videoId, {
