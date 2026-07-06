@@ -177,18 +177,20 @@ const openRouterUrl = "https://openrouter.ai/api/v1/chat/completions";
 // Supabase Edge Functions are hard-killed at the wall-clock limit (~150s)
 // without running catch blocks, which previously left jobs stuck at
 // "running". Stop starting new work after this budget and chain a fresh
-// invocation instead, keeping every invocation far below the kill limit.
-const INVOCATION_TIME_BUDGET_MS = 45_000;
+// invocation instead. Worst case per invocation:
+// budget (30s) + timeout (55s) + one retry (55s) = 140s < 150s kill limit.
+const INVOCATION_TIME_BUDGET_MS = 30_000;
 
 // Per-LLM-call timeout. A hung upstream connection previously stalled the
-// invocation until the runtime killed it silently.
-const OPENROUTER_TIMEOUT_MS = 40_000;
+// invocation until the runtime killed it silently. Measured latency for a
+// 12-segment batch on deepseek via OpenRouter is ~25s.
+const OPENROUTER_TIMEOUT_MS = 55_000;
 
-// Segments per LLM call: large enough for passage-level Sinhala flow (the
-// full transcript plus prior translations carry the context), small enough
-// that each call reliably completes within the timeout and progress updates
-// stay granular.
-const TRANSLATION_BATCH_SIZE = 20;
+// Segments per LLM call. Passage-level Sinhala flow comes from the full
+// transcript in the system prompt plus prior-translation continuity, so the
+// batch only needs to be small enough to finish reliably within the timeout
+// and keep progress updates granular.
+const TRANSLATION_BATCH_SIZE = 12;
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
