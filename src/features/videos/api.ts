@@ -1,8 +1,7 @@
 import type { ChatMessage, TranscriptSegment, Video } from "@/features/videos/data";
 import { emptyImportIcon } from "@/features/videos/data";
-import { supabase } from "@/lib/supabase";
+import { supabase, supabaseAnonKey, supabaseUrl } from "@/lib/supabase";
 import { formatDuration } from "@/lib/time";
-import { createLocalVideoReply } from "@/lib/video-chat";
 
 export type ProcessingJob = {
   id: string;
@@ -120,7 +119,17 @@ export const videoQueryKeys = {
   all: ["videos"] as const,
   detail: (videoId: string | null) => ["videos", videoId] as const,
   transcript: (videoId: string | null) => ["videos", videoId, "transcript"] as const,
+  // videoId null = the library-wide chat thread.
   chat: (videoId: string | null) => ["videos", videoId, "chat"] as const,
+  notes: (videoId: string | null) => ["videos", videoId, "notes"] as const,
+};
+
+export type VideoNote = {
+  id: string;
+  videoId: string;
+  timestampMs: number;
+  content: string;
+  createdAt: string;
 };
 
 export async function fetchLibraryVideos(): Promise<LibraryVideo[]> {
@@ -219,17 +228,19 @@ export async function fetchVideoTranscript(
 export async function fetchChatMessages(
   videoId: string | null,
 ): Promise<ChatMessage[]> {
-  if (!videoId) {
-    return [];
-  }
-
   const client = requireSupabase();
-  const { data: threads, error: threadError } = await client
+  let threadQuery = client
     .from("chat_threads")
     .select("id")
-    .eq("video_id", videoId)
     .order("created_at", { ascending: true })
     .limit(1);
+
+  // videoId null = the library-wide chat thread.
+  threadQuery = videoId
+    ? threadQuery.eq("video_id", videoId)
+    : threadQuery.is("video_id", null);
+
+  const { data: threads, error: threadError } = await threadQuery;
 
   if (threadError) {
     throw threadError;
@@ -392,91 +403,166 @@ export async function deleteVideo(videoId: string) {
   }
 }
 
-export async function sendVideoChatMessage(input: {
-  videoId: string;
+// Streams an answer from the video-chat edge function. videoId null asks the
+// library-wide assistant. onDelta receives incremental answer text; the
+// promise resolves once the full answer has been persisted server-side.
+export async function streamVideoChat(input: {
+  videoId: string | null;
   question: string;
-  transcript: TranscriptSegment[];
-}) {
+  onDelta: (text: string) => void;
+}): Promise<void> {
   const client = requireSupabase();
   const {
-    data: { user },
-    error: userError,
-  } = await client.auth.getUser();
+    data: { session },
+  } = await client.auth.getSession();
 
-  if (userError || !user) {
-    throw new Error("You must be signed in to chat about a video.");
+  if (!session) {
+    throw new Error("You must be signed in to chat.");
   }
 
-  const threadId = await ensureChatThread(input.videoId);
-  const reply = createLocalVideoReply(input.question, input.transcript);
+  const response = await fetch(`${supabaseUrl}/functions/v1/video-chat`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${session.access_token}`,
+      "apikey": supabaseAnonKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      videoId: input.videoId,
+      question: input.question,
+    }),
+  });
 
-  const { error } = await client.from("chat_messages").insert([
-    {
-      thread_id: threadId,
-      owner_id: user.id,
-      role: "user",
-      content: input.question,
-      metadata: {},
-    },
-    {
-      thread_id: threadId,
-      owner_id: user.id,
-      role: "assistant",
-      content: reply.content,
-      metadata: {
-        citation: reply.citation,
-        response_source: "local_transcript",
-      },
-    },
-  ]);
+  if (!response.ok || !response.body) {
+    const detail = await response.json().catch(() => null) as
+      | { error?: string }
+      | null;
+    throw new Error(detail?.error ?? "The chat service is unavailable.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+
+        if (!trimmed.startsWith("data:")) {
+          continue;
+        }
+
+        const payload = trimmed.slice(5).trim();
+
+        if (!payload) {
+          continue;
+        }
+
+        const event = JSON.parse(payload) as {
+          type: "meta" | "delta" | "done" | "error";
+          text?: string;
+          message?: string;
+        };
+
+        if (event.type === "delta" && event.text) {
+          input.onDelta(event.text);
+        } else if (event.type === "error") {
+          throw new Error(event.message ?? "Chat response failed.");
+        } else if (event.type === "done") {
+          finished = true;
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (!finished) {
+    throw new Error("The chat response ended unexpectedly.");
+  }
+}
+
+type VideoNoteRow = {
+  id: string;
+  video_id: string;
+  timestamp_ms: number;
+  content: string;
+  created_at: string;
+};
+
+export async function fetchVideoNotes(
+  videoId: string | null,
+): Promise<VideoNote[]> {
+  if (!videoId) {
+    return [];
+  }
+
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("video_notes")
+    .select("id, video_id, timestamp_ms, content, created_at")
+    .eq("video_id", videoId)
+    .order("timestamp_ms", { ascending: true });
 
   if (error) {
     throw error;
   }
+
+  return ((data ?? []) as VideoNoteRow[]).map((note) => ({
+    id: note.id,
+    videoId: note.video_id,
+    timestampMs: note.timestamp_ms,
+    content: note.content,
+    createdAt: note.created_at,
+  }));
 }
 
-async function ensureChatThread(videoId: string) {
+export async function addVideoNote(input: {
+  videoId: string;
+  timestampMs: number;
+  content: string;
+}) {
   const client = requireSupabase();
   const {
     data: { user },
   } = await client.auth.getUser();
 
   if (!user) {
-    throw new Error("You must be signed in to chat about a video.");
+    throw new Error("You must be signed in to add notes.");
   }
 
-  const { data: existingThreads, error: selectError } = await client
-    .from("chat_threads")
-    .select("id")
-    .eq("video_id", videoId)
-    .order("created_at", { ascending: true })
-    .limit(1);
+  const { error } = await client.from("video_notes").insert({
+    owner_id: user.id,
+    video_id: input.videoId,
+    timestamp_ms: Math.max(0, Math.floor(input.timestampMs)),
+    content: input.content,
+  });
 
-  if (selectError) {
-    throw selectError;
+  if (error) {
+    throw error;
   }
+}
 
-  const existingThread = (existingThreads as ChatThreadRow[] | null)?.[0];
+export async function deleteVideoNote(noteId: string) {
+  const client = requireSupabase();
+  const { error } = await client.from("video_notes").delete().eq("id", noteId);
 
-  if (existingThread) {
-    return existingThread.id;
+  if (error) {
+    throw error;
   }
-
-  const { data: thread, error: insertError } = await client
-    .from("chat_threads")
-    .insert({
-      owner_id: user.id,
-      video_id: videoId,
-      title: "Video chat",
-    })
-    .select("id")
-    .single();
-
-  if (insertError || !thread) {
-    throw insertError ?? new Error("Could not create chat thread.");
-  }
-
-  return (thread as ChatThreadRow).id;
 }
 
 function requireSupabase() {

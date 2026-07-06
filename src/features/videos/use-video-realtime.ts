@@ -10,6 +10,7 @@ const realtimeTables = [
   "translated_segments",
   "chat_threads",
   "chat_messages",
+  "video_notes",
 ] as const;
 
 type RealtimeTable = (typeof realtimeTables)[number];
@@ -23,6 +24,7 @@ const FLUSH_DELAY_MS = 400;
 type PendingInvalidations = {
   library: boolean;
   transcriptVideoIds: Set<string>;
+  noteVideoIds: Set<string>;
   chat: boolean;
 };
 
@@ -39,6 +41,7 @@ export function useVideoRealtime(enabled: boolean) {
     const pending: PendingInvalidations = {
       library: false,
       transcriptVideoIds: new Set(),
+      noteVideoIds: new Set(),
       chat: false,
     };
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -65,6 +68,13 @@ export function useVideoRealtime(enabled: boolean) {
         });
       }
       pending.transcriptVideoIds.clear();
+
+      for (const videoId of pending.noteVideoIds) {
+        void queryClient.invalidateQueries({
+          queryKey: videoQueryKeys.notes(videoId),
+        });
+      }
+      pending.noteVideoIds.clear();
 
       if (pending.chat) {
         pending.chat = false;
@@ -133,6 +143,11 @@ function markPending(
     case "translated_segments":
       if (videoId) {
         pending.transcriptVideoIds.add(videoId);
+      }
+      break;
+    case "video_notes":
+      if (videoId) {
+        pending.noteVideoIds.add(videoId);
       }
       break;
     case "chat_threads":
