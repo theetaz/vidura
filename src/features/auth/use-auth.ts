@@ -12,7 +12,7 @@ type AuthState = {
   loading: boolean;
   session: Session | null;
   user: User | null;
-  signInWithEmail: (email: string) => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -79,15 +79,15 @@ export function useAuth(): AuthState {
     loading,
     session,
     user: session?.user ?? null,
-    signInWithEmail: async (email: string) => {
+    signInWithGoogle: async () => {
       if (!supabase) {
         throw new Error("Supabase is not configured.");
       }
 
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
         options: {
-          emailRedirectTo: window.location.origin,
+          redirectTo: window.location.origin,
         },
       });
 

@@ -254,7 +254,7 @@ function ViduraApp() {
   }
 
   if (auth.configured && !auth.session) {
-    return <AuthScreen onSignIn={auth.signInWithEmail} />;
+    return <AuthScreen onSignIn={auth.signInWithGoogle} />;
   }
 
   return (
@@ -354,29 +354,24 @@ function LoadingScreen() {
 function AuthScreen({
   onSignIn,
 }: {
-  onSignIn: (email: string) => Promise<void>;
+  onSignIn: () => Promise<void>;
 }) {
-  const [email, setEmail] = useState("");
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSignIn() {
     setSubmitting(true);
-    setMessage("");
     setError("");
 
     try {
-      await onSignIn(email);
-      setMessage("Check your email for the Vidura sign-in link.");
+      await onSignIn();
+      setSubmitting(false);
     } catch (signInError) {
       setError(
         signInError instanceof Error
           ? signInError.message
-          : "Could not send sign-in link.",
+          : "Could not start Google sign in.",
       );
-    } finally {
       setSubmitting(false);
     }
   }
@@ -398,39 +393,26 @@ function AuthScreen({
           </div>
         </CardHeader>
         <CardContent>
-          <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+          <div className="flex flex-col gap-4">
             <Field data-invalid={Boolean(error)}>
-              <FieldLabel htmlFor="auth-email">Email</FieldLabel>
-              <InputGroup className="h-12 border-2 border-foreground bg-card">
-                <InputGroupInput
-                  aria-invalid={Boolean(error)}
-                  id="auth-email"
-                  onChange={(event) => {
-                    setEmail(event.target.value);
-                    setError("");
-                    setMessage("");
-                  }}
-                  placeholder="you@example.com"
-                  type="email"
-                  value={email}
-                />
-              </InputGroup>
+              <FieldLabel>Google account</FieldLabel>
+              <FieldDescription className="font-bold text-foreground/60">
+                Continue with Google to save your video library and chats.
+              </FieldDescription>
               {error ? (
                 <FieldDescription className="font-bold text-destructive">
                   {error}
                 </FieldDescription>
               ) : null}
-              {message ? (
-                <FieldDescription className="font-bold text-foreground">
-                  {message}
-                </FieldDescription>
-              ) : null}
             </Field>
-            <CartoonButton disabled={submitting || !email} type="submit">
-              {submitting ? "Sending link..." : "Send magic link"}
+            <CartoonButton disabled={submitting} onClick={handleSignIn} type="button">
+              <span className="grid size-6 place-items-center rounded-full border-2 border-foreground bg-card font-black">
+                G
+              </span>
+              {submitting ? "Opening Google..." : "Continue with Google"}
               <ChevronRightIcon data-icon="inline-end" />
             </CartoonButton>
-          </form>
+          </div>
         </CardContent>
       </StickerCard>
     </main>
