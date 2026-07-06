@@ -343,7 +343,8 @@ const sharedGuidance = [
   "Answer ONLY from the provided context (transcripts, notes, video catalog). If the answer is not in the context, say so honestly.",
   "Detect the user's language and reply in it: English questions get English answers; Sinhala script gets Sinhala; Singlish (Sinhala written in Latin letters) gets simple Singlish or Sinhala.",
   "Always cite where in the video your answer comes from using [mm:ss] timestamps taken from the context.",
-  "Keep answers concise and conversational. Use short paragraphs or bullet lists, never headers.",
+  "Keep answers concise and conversational. Use short paragraphs or simple '-' bullet lines.",
+  "Write plain text only — no markdown formatting such as **bold**, headers, or numbered syntax.",
 ].join("\n");
 
 async function buildVideoContext(
