@@ -1378,6 +1378,8 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const subtitlePlacement = useAppStore((state) => state.subtitlePlacement);
   const subtitleSize = useAppStore((state) => state.subtitleSize);
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
+  const videoContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isImmersive, setIsImmersive] = useState(false);
   const [playbackTime, setPlaybackTime] = useState<{
     videoId: string | null;
     milliseconds: number;
@@ -1399,6 +1401,8 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const subtitlesStillLoading = transcriptQuery.isPending ||
     transcriptQuery.isFetching ||
     isVideoStillProcessing(selectedVideo);
+  const showOverlaySubtitles = isImmersive || subtitlePlacement === "overlay";
+  const showBelowSubtitles = !isImmersive && subtitlePlacement === "below";
   const currentPlaybackMs = playbackTime.videoId === selectedVideo?.id
     ? playbackTime.milliseconds
     : 0;
@@ -1426,6 +1430,42 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
       };
     });
   }, [selectedVideo?.id]);
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      setIsImmersive(document.fullscreenElement === videoContainerRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+    };
+  }, []);
+
+  async function toggleImmersivePlayback() {
+    const container = videoContainerRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    if (isImmersive) {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+
+      setIsImmersive(false);
+      return;
+    }
+
+    try {
+      await container.requestFullscreen();
+      setIsImmersive(true);
+    } catch {
+      setIsImmersive(true);
+    }
+  }
 
   useEffect(() => {
     if (selectedVideo?.id && selectedVideo.id !== storedSelectedVideoId) {
@@ -1474,7 +1514,15 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
           </div>
         </div>
         <StickerCard className="overflow-hidden bg-vidura-ink p-0">
-          <div className="relative aspect-video overflow-hidden bg-vidura-ink">
+          <div
+            className={cn(
+              "relative overflow-hidden bg-vidura-ink",
+              isImmersive
+                ? "fixed inset-0 z-50 flex h-dvh w-dvw items-center justify-center bg-black"
+                : "aspect-video",
+            )}
+            ref={videoContainerRef}
+          >
             {youtubeVideoId ? (
               <YouTubePlayerFrame
                 key={youtubeVideoId}
@@ -1493,7 +1541,20 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
                 </div>
               </>
             )}
-            {subtitleEnabled && subtitlePlacement === "overlay" ? (
+            {youtubeVideoId ? (
+              <Button
+                aria-label={isImmersive ? "Exit fullscreen" : "Enter fullscreen"}
+                className="pointer-events-auto absolute top-2 right-2 z-20 border-2 border-white/80 bg-black/55 text-white hover:bg-black/75 lg:hidden"
+                onClick={() => {
+                  void toggleImmersivePlayback();
+                }}
+                size="icon-sm"
+                variant="ghost"
+              >
+                {isImmersive ? <Minimize2Icon /> : <Maximize2Icon />}
+              </Button>
+            ) : null}
+            {subtitleEnabled && showOverlaySubtitles ? (
               <SubtitleCaption
                 activeSubtitle={activeSubtitle}
                 subtitleOpacity={subtitleOpacity}
@@ -1513,7 +1574,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             ) : null}
           </div>
         </StickerCard>
-        {subtitleEnabled && subtitlePlacement === "below" ? (
+        {subtitleEnabled && showBelowSubtitles ? (
           <SubtitleCaption
             activeSubtitle={activeSubtitle}
             subtitleOpacity={subtitleOpacity}
@@ -2149,7 +2210,8 @@ function SettingsScreen() {
             <FieldTitle>Subtitle placement</FieldTitle>
             <FieldDescription>
               Keep captions below the video on mobile, or overlay them on the
-              player when you want a theater-style view.
+              player when you want a theater-style view. Fullscreen mode always
+              overlays subtitles so landscape playback stays readable.
             </FieldDescription>
             <ToggleGroup
               className="justify-start"
