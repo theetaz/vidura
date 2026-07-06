@@ -413,3 +413,9 @@ entrypoint = "./functions/create-video-job/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/create-video-job/*.html" ]
+
+[functions.regenerate-video-subtitles]
+enabled = true
+verify_jwt = true
+import_map = "./functions/regenerate-video-subtitles/deno.json"
+entrypoint = "./functions/regenerate-video-subtitles/index.ts"

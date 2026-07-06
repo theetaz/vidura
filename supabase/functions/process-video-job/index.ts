@@ -17,6 +17,8 @@ type ProcessVideoJobBody = {
   sourceLanguage?: string;
   targetLanguage?: string;
   segments?: TranscriptSegmentInput[];
+  forceRetranslate?: boolean;
+  rebuildContext?: boolean;
 };
 
 type TranslationResult = {
@@ -352,6 +354,14 @@ Deno.serve(async (request) => {
       );
     }
 
+    if (body.forceRetranslate) {
+      await deleteTranslatedSegments(
+        serviceClient,
+        job.video_id,
+        targetLanguage,
+      );
+    }
+
     const translatedSegmentIds = await fetchTranslatedSegmentIds(
       serviceClient,
       job.video_id,
@@ -376,9 +386,9 @@ Deno.serve(async (request) => {
       string,
       unknown
     >;
-    let translationContext = parseTranslationContext(
-      existingMetadata.translation_context,
-    );
+    let translationContext = body.rebuildContext
+      ? null
+      : parseTranslationContext(existingMetadata.translation_context);
 
     const { data: videoDetails } = await serviceClient
       .from("videos")
@@ -998,6 +1008,22 @@ function storedSegmentsToNormalized(
   });
 }
 
+async function deleteTranslatedSegments(
+  serviceClient: ServiceClient,
+  videoId: string,
+  targetLanguage: string,
+) {
+  const { error } = await serviceClient
+    .from("translated_segments")
+    .delete()
+    .eq("video_id", videoId)
+    .eq("language_code", targetLanguage);
+
+  if (error) {
+    throw new Error("Failed to clear existing translated segments");
+  }
+}
+
 async function fetchTranslatedSegmentIds(
   serviceClient: ServiceClient,
   videoId: string,
@@ -1055,6 +1081,44 @@ function chunkSegments<T>(segments: T[], size: number) {
   }
 
   return batches;
+}
+
+function formatFullTranscriptForPrompt(
+  segments: NormalizedTranscriptSegment[],
+) {
+  return segments
+    .map((segment) => `[${segment.index}] ${segment.text}`)
+    .join("\n");
+}
+
+function buildTranslationSystemPrompt(
+  translationContext: TranslationContext,
+  allSegments: NormalizedTranscriptSegment[],
+) {
+  const keyTerms = translationContext.keyTerms.length > 0
+    ? translationContext.keyTerms
+      .map((term) => `${term.source} → ${term.preferredSinhala}`)
+      .join("; ")
+    : "Use consistent native Sinhala terms throughout.";
+
+  return [
+    "You localize educational YouTube subtitles into natural spoken Sinhala (සිංහල).",
+    "You have already read the ENTIRE transcript of this video. Never translate lines in isolation.",
+    "Each subtitle must read like continuous native Sinhala narration that fits the video topic, tone, and teaching style.",
+    "Avoid word-for-word English calques, awkward sentence order, and unnecessary transliteration.",
+    "Prefer idiomatic Sinhala phrasing that a native speaker would use while explaining the same idea on video.",
+    "",
+    `Topic: ${translationContext.topic}`,
+    `Summary: ${translationContext.summary}`,
+    `Audience: ${translationContext.audience}`,
+    `Style guide: ${translationContext.translationGuidelines}`,
+    `Key terms: ${keyTerms}`,
+    "",
+    "Full source transcript (read for global context; translate only requested indices):",
+    formatFullTranscriptForPrompt(allSegments),
+    "",
+    "Return only valid JSON.",
+  ].join("\n");
 }
 
 function calculateTranslationProgress(position: number, totalSegments: number) {
@@ -1246,9 +1310,10 @@ async function buildTranslationContext(input: {
     apiKey: input.apiKey,
     model: input.model,
     system:
-      "You prepare translation context for educational YouTube videos that will be localized into natural spoken Sinhala. Return only valid JSON.",
+      "You analyze full YouTube transcripts and prepare localization guidance for natural spoken Sinhala subtitles. The goal is fluent native Sinhala that fits the video, not literal one-to-one translation. Return only valid JSON.",
     user: {
-      task: "Analyze the full transcript and produce translation context.",
+      task:
+        "Read the entire transcript first, then produce translation context a Sinhala subtitle localizer will follow.",
       sourceLanguage: input.sourceLanguage,
       targetLanguage: input.targetLanguage,
       videoTitle: input.videoTitle,
@@ -1258,7 +1323,7 @@ async function buildTranslationContext(input: {
         text: segment.text,
       })),
       instructions:
-        'Return one JSON object shaped as {"topic":"...","summary":"...","audience":"...","translationGuidelines":"...","keyTerms":[{"source":"...","preferredSinhala":"..."}]}. The summary should explain the whole video. translationGuidelines must tell a translator to produce natural native Sinhala, not literal English-to-Sinhala wording, while keeping educational clarity.',
+        'Return one JSON object shaped as {"topic":"...","summary":"...","audience":"...","translationGuidelines":"...","keyTerms":[{"source":"...","preferredSinhala":"..."}]}. The summary must capture the whole video arc. translationGuidelines must explicitly instruct the translator to: (1) read the full transcript before each batch, (2) write composed native Sinhala a learner would hear in a Sri Lankan educational video, (3) avoid literal English word order and calques, (4) keep terminology consistent, and (5) keep lines concise for on-screen subtitles.',
     },
     temperature: 0.1,
   });
@@ -1275,7 +1340,7 @@ async function buildTranslationContext(input: {
 function buildLocalTranscriptWindow(
   allSegments: NormalizedTranscriptSegment[],
   batchSegments: NormalizedTranscriptSegment[],
-  radius = 4,
+  radius = 8,
 ) {
   if (batchSegments.length === 0) {
     return [];
@@ -1297,7 +1362,7 @@ function buildLocalTranscriptWindow(
 function buildPriorTranslations(
   batchSegments: NormalizedTranscriptSegment[],
   existingTranslations: Map<number, string>,
-  limit = 6,
+  limit = 12,
 ) {
   const firstIndex = batchSegments[0]?.index ?? 0;
 
@@ -1326,7 +1391,7 @@ async function translateBatches(input: {
   totalSegments: number;
   initialTranslatedSegments: number;
 }) {
-  const batches = chunkSegments(input.segments, 20).map((segments, index) => ({
+  const batches = chunkSegments(input.segments, 12).map((segments, index) => ({
     index,
     segments,
   }));
@@ -1428,28 +1493,28 @@ async function translateSegmentBatch(input: {
   const parsed = await requestOpenRouterJson<Record<string, unknown>>({
     apiKey: input.apiKey,
     model: input.model,
-    system:
-      "You localize educational video subtitles into natural spoken Sinhala (සිංහල). Understand the full video context first, then translate only the requested timestamped segments so they read like native Sinhala narration, not word-for-word English. Preserve meaning, timing fit, and terminology consistency. Return only valid JSON.",
+    system: buildTranslationSystemPrompt(
+      input.translationContext,
+      input.allSegments,
+    ),
     user: {
       sourceLanguage: input.sourceLanguage,
       targetLanguage: input.targetLanguage,
       videoTitle: input.videoTitle,
       channelTitle: input.channelTitle,
       videoContext: input.translationContext,
-      fullTranscript: input.allSegments.map((segment) => ({
-        index: segment.index,
-        text: segment.text,
-      })),
       nearbyTranscript: input.localTranscriptWindow,
       priorSinhalaTranslations: input.priorTranslations,
       segmentsToTranslate: input.segments.map((segment) => ({
         index: segment.index,
+        startMs: segment.startMs,
+        endMs: segment.endMs,
         text: segment.text,
       })),
       instructions:
-        'Read the full transcript and videoContext before translating. Produce fluent native Sinhala that a learner would find easy to follow while watching the video. Avoid literal calques, awkward English sentence order, and unnecessary transliteration. Keep each output segment aligned to its index and concise enough for on-screen subtitles. Return one JSON object shaped as {"translations":[{"index":0,"text":"..."}]} and no other keys.',
+        'Using the full transcript already provided in the system message, translate ONLY segmentsToTranslate. Write composed native Sinhala that flows naturally with priorSinhalaTranslations and nearbyTranscript. Do not mirror English grammar. Rephrase freely when needed so the line sounds spoken and relevant to the video. Keep each line short enough for on-screen subtitles. Return one JSON object shaped as {"translations":[{"index":0,"text":"..."}]} and no other keys.',
     },
-    temperature: 0.35,
+    temperature: 0.4,
   });
 
   return parseTranslationContent(

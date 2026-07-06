@@ -41,6 +41,7 @@ import {
   MoreHorizontalIcon,
   PauseIcon,
   PlusIcon,
+  RefreshCwIcon,
   SearchIcon,
   SendIcon,
   SettingsIcon,
@@ -113,6 +114,7 @@ import {
   fetchChatMessages,
   fetchLibraryVideos,
   fetchVideoTranscript,
+  regenerateSubtitles,
   sendVideoChatMessage,
   videoQueryKeys,
   type LibraryVideo,
@@ -1892,32 +1894,74 @@ function TranscriptPanel({
   isProcessing?: boolean;
   videoId: string;
 }) {
+  const queryClient = useQueryClient();
   const transcriptQuery = useQuery({
     queryKey: videoQueryKeys.transcript(videoId),
     queryFn: () => fetchVideoTranscript(videoId),
     refetchInterval: isProcessing ? 2_000 : false,
   });
+  const regenerateMutation = useMutation({
+    mutationFn: () =>
+      regenerateSubtitles({
+        videoId,
+        rebuildContext: true,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
+      await queryClient.invalidateQueries({
+        queryKey: videoQueryKeys.transcript(videoId),
+      });
+    },
+  });
   const selectedTranscript = transcriptQuery.data ?? [];
   const isLoading = transcriptQuery.isPending || transcriptQuery.isFetching;
+  const isRegenerating = regenerateMutation.isPending || isProcessing;
 
   return (
     <StickerCard>
       <Tabs defaultValue="sinhala">
         <CardHeader className="pb-2">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="font-display text-2xl font-black">
-              Transcript
-            </CardTitle>
-            <TabsList className="border-2 border-foreground bg-vidura-cream">
-              <TabsTrigger value="sinhala">Sinhala</TabsTrigger>
-              <TabsTrigger value="bilingual">Bilingual</TabsTrigger>
-            </TabsList>
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="font-display text-2xl font-black">
+                Transcript
+              </CardTitle>
+              <TabsList className="border-2 border-foreground bg-vidura-cream">
+                <TabsTrigger value="sinhala">Sinhala</TabsTrigger>
+                <TabsTrigger value="bilingual">Bilingual</TabsTrigger>
+              </TabsList>
+            </div>
+            <Button
+              className="w-full border-2 border-foreground sm:w-auto sm:self-start"
+              disabled={isRegenerating || selectedTranscript.length === 0}
+              onClick={() => {
+                regenerateMutation.mutate();
+              }}
+              size="sm"
+              variant="outline"
+            >
+              {regenerateMutation.isPending ? (
+                <Loader2Icon className="animate-spin" data-icon="inline-start" />
+              ) : (
+                <RefreshCwIcon data-icon="inline-start" />
+              )}
+              Regenerate subtitles
+            </Button>
           </div>
-          {isLoading || isProcessing ? (
+          {regenerateMutation.isError ? (
+            <p className="mt-2 text-sm font-semibold text-vidura-coral">
+              {regenerateMutation.error instanceof Error
+                ? regenerateMutation.error.message
+                : "Could not regenerate subtitles."}
+            </p>
+          ) : null}
+          {isLoading || isRegenerating ? (
             <div className="mt-3">
               <InlineLoadingNotice
                 label={
-                  isLoading
+                  regenerateMutation.isPending
+                    ? "Rebuilding Sinhala subtitles with full video context..."
+                    : isLoading
                     ? "Loading Sinhala subtitles..."
                     : "Translating more subtitle lines..."
                 }
@@ -1926,7 +1970,7 @@ function TranscriptPanel({
           ) : null}
         </CardHeader>
         <CardContent>
-          {!isLoading && !isProcessing && selectedTranscript.length === 0 ? (
+          {!isLoading && !isRegenerating && selectedTranscript.length === 0 ? (
             <p className="text-sm font-black text-foreground/60">
               Transcript lines will appear here as processing stores them.
             </p>
@@ -1934,7 +1978,7 @@ function TranscriptPanel({
           <TabsContent className="mt-0" value="sinhala">
             <TranscriptRows
               activeSegmentId={activeSegmentId}
-              isLoading={isLoading || isProcessing}
+              isLoading={isLoading || isRegenerating}
               mode="sinhala"
               segments={selectedTranscript}
             />
@@ -1942,7 +1986,7 @@ function TranscriptPanel({
           <TabsContent className="mt-0" value="bilingual">
             <TranscriptRows
               activeSegmentId={activeSegmentId}
-              isLoading={isLoading || isProcessing}
+              isLoading={isLoading || isRegenerating}
               mode="bilingual"
               segments={selectedTranscript}
             />

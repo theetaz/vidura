@@ -102,6 +102,20 @@ type ProcessVideoJobResponse = {
   translatedSegments: number;
 };
 
+export type RegenerateSubtitlesResponse = {
+  video: {
+    id: string;
+    status: string;
+  };
+  job: {
+    id: string;
+    video_id: string;
+    status: string;
+    progress: number;
+    created_at: string;
+  };
+};
+
 export const videoQueryKeys = {
   all: ["videos"] as const,
   detail: (videoId: string | null) => ["videos", videoId] as const,
@@ -315,6 +329,36 @@ export async function processVideoJob(input: {
 
   if (!data?.job || !data.video) {
     throw new Error("The process-video-job function returned an invalid response.");
+  }
+
+  return data;
+}
+
+export async function regenerateSubtitles(input: {
+  videoId: string;
+  targetLanguage?: string;
+  rebuildContext?: boolean;
+}) {
+  const client = requireSupabase();
+  const { data, error } = await client.functions.invoke<RegenerateSubtitlesResponse>(
+    "regenerate-video-subtitles",
+    {
+      body: {
+        videoId: input.videoId,
+        targetLanguage: input.targetLanguage ?? "si-LK",
+        rebuildContext: input.rebuildContext ?? true,
+      },
+    },
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data?.video || !data.job) {
+    throw new Error(
+      "The regenerate-video-subtitles function returned an invalid response.",
+    );
   }
 
   return data;
