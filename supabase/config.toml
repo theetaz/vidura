@@ -152,6 +152,7 @@ site_url = "https://vidura-5ng.pages.dev"
 additional_redirect_urls = [
   "https://vidura-5ng.pages.dev",
   "https://b48b91fc.vidura-5ng.pages.dev",
+  "https://8a2b7c46.vidura-5ng.pages.dev",
   "http://localhost:5173",
   "http://localhost:5174",
   "http://localhost:5175",
