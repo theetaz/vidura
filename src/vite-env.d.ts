@@ -7,6 +7,8 @@ type YouTubePlayerEvent = {
 type YouTubePlayerInstance = {
   destroy: () => void;
   getCurrentTime: () => number;
+  getPlayerState: () => number;
+  playVideo: () => void;
 };
 
 type YouTubePlayerOptions = {
@@ -17,6 +19,7 @@ type YouTubePlayerOptions = {
   events?: {
     onReady?: () => void;
     onError?: (event: YouTubePlayerEvent) => void;
+    onStateChange?: (event: YouTubePlayerEvent) => void;
   };
 };
 

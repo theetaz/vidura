@@ -144,12 +144,12 @@ const navItems: Array<{
   Icon: typeof HomeIcon;
   path: string;
 }> = [
-  { view: "library", label: "Library", Icon: HomeIcon, path: "/library" },
-  { view: "add", label: "Add", Icon: PlusIcon, path: "/add" },
-  { view: "watch", label: "Watch", Icon: CirclePlayIcon, path: "/watch" },
-  { view: "chat", label: "Chats", Icon: MessageCircleIcon, path: "/chats" },
-  { view: "settings", label: "Settings", Icon: SettingsIcon, path: "/settings" },
-];
+    { view: "library", label: "Library", Icon: HomeIcon, path: "/library" },
+    { view: "add", label: "Add", Icon: PlusIcon, path: "/add" },
+    { view: "watch", label: "Watch", Icon: CirclePlayIcon, path: "/watch" },
+    { view: "chat", label: "Chats", Icon: MessageCircleIcon, path: "/chats" },
+    { view: "settings", label: "Settings", Icon: SettingsIcon, path: "/settings" },
+  ];
 
 function App() {
   return (
@@ -491,7 +491,7 @@ function TopBar() {
                 className={cn(
                   "h-10 justify-start rounded-md border-2 border-transparent px-2 text-sm font-black",
                   currentView === view &&
-                    "border-foreground bg-vidura-mint text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint"
+                  "border-foreground bg-vidura-mint text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint"
                 )}
                 key={view}
                 variant={currentView === view ? "secondary" : "ghost"}
@@ -628,7 +628,7 @@ function DesktopSidebar() {
               className={cn(
                 "h-9 justify-start rounded-md border-2 border-transparent px-2 text-sm font-black",
                 currentView === view &&
-                  "border-foreground bg-vidura-mint text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint"
+                "border-foreground bg-vidura-mint text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint"
               )}
               key={view}
               variant={currentView === view ? "secondary" : "ghost"}
@@ -683,7 +683,7 @@ function MobileNav() {
             className={cn(
               "h-12 flex-col gap-0.5 rounded-md px-1 text-[0.66rem] font-bold sm:h-13 sm:text-[0.7rem]",
               currentView === view &&
-                "border-2 border-foreground bg-vidura-mint text-foreground hover:bg-vidura-mint"
+              "border-2 border-foreground bg-vidura-mint text-foreground hover:bg-vidura-mint"
             )}
             key={view}
             variant="ghost"
@@ -1504,13 +1504,13 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             </Button>
           </div>
         </div>
-        <StickerCard className="overflow-hidden bg-vidura-ink p-0">
+        <div className="overflow-visible rounded-lg border-2 border-foreground bg-vidura-ink shadow-[5px_5px_0_var(--vidura-shadow)]">
           <div
             className={cn(
-              "relative overflow-hidden bg-vidura-ink",
+              "relative bg-vidura-ink",
               isImmersive
                 ? "fixed inset-0 z-50 flex h-dvh w-dvw items-center justify-center bg-black"
-                : "aspect-video",
+                : "aspect-video rounded-lg",
             )}
             ref={videoContainerRef}
           >
@@ -1564,7 +1564,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
               </div>
             ) : null}
           </div>
-        </StickerCard>
+        </div>
         {subtitleEnabled && showBelowSubtitles ? (
           <SubtitleCaption
             activeSubtitle={activeSubtitle}
@@ -1650,8 +1650,32 @@ function YouTubePlayerFrame({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const playerRef = useRef<YouTubePlayerInstance | null>(null);
+  const onTimeChangeRef = useRef(onTimeChange);
   const lastReportedTimeRef = useRef(-1);
   const [playerError, setPlayerError] = useState<number | null>(null);
+  const [isPlayerReady, setIsPlayerReady] = useState(false);
+  const [isTouchPlayback, setIsTouchPlayback] = useState(false);
+  const [hasStartedPlayback, setHasStartedPlayback] = useState(false);
+
+  useEffect(() => {
+    onTimeChangeRef.current = onTimeChange;
+  }, [onTimeChange]);
+
+  useEffect(() => {
+    function updateTouchPlayback() {
+      setIsTouchPlayback(
+        window.matchMedia("(pointer: coarse)").matches ||
+          window.matchMedia("(max-width: 1023px)").matches,
+      );
+    }
+
+    updateTouchPlayback();
+    window.addEventListener("resize", updateTouchPlayback);
+
+    return () => {
+      window.removeEventListener("resize", updateTouchPlayback);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1668,6 +1692,14 @@ function YouTubePlayerFrame({
           return;
         }
 
+        const playerState = typeof player.getPlayerState === "function"
+          ? player.getPlayerState()
+          : null;
+
+        if (playerState === 1 || playerState === 3) {
+          setHasStartedPlayback(true);
+        }
+
         const currentTime = player.getCurrentTime();
 
         if (typeof currentTime !== "number" || Number.isNaN(currentTime)) {
@@ -1681,9 +1713,13 @@ function YouTubePlayerFrame({
         }
 
         lastReportedTimeRef.current = milliseconds;
-        onTimeChange(milliseconds);
+        onTimeChangeRef.current(milliseconds);
       }, 250);
     };
+
+    setPlayerError(null);
+    setIsPlayerReady(false);
+    setHasStartedPlayback(false);
 
     void loadYouTubeIframeApi()
       .then(() => {
@@ -1697,14 +1733,28 @@ function YouTubePlayerFrame({
           height: "100%",
           videoId,
           playerVars: {
+            controls: 1,
             enablejsapi: 1,
+            fs: 1,
             modestbranding: 1,
             origin: window.location.origin,
             playsinline: 1,
             rel: 0,
           },
           events: {
-            onReady: startTimePolling,
+            onReady: () => {
+              if (cancelled) {
+                return;
+              }
+
+              setIsPlayerReady(true);
+              startTimePolling();
+            },
+            onStateChange: (event) => {
+              if (event.data === 1 || event.data === 3) {
+                setHasStartedPlayback(true);
+              }
+            },
             onError: (event) => {
               if ([2, 5, 100, 101, 150].includes(event.data)) {
                 setPlayerError(event.data);
@@ -1727,18 +1777,44 @@ function YouTubePlayerFrame({
       playerRef.current?.destroy();
       playerRef.current = null;
     };
-  }, [onTimeChange, videoId]);
+  }, [videoId]);
+
+  function handleTapToPlay() {
+    const player = playerRef.current;
+
+    if (!player || typeof player.playVideo !== "function") {
+      return;
+    }
+
+    player.playVideo();
+    setHasStartedPlayback(true);
+  }
+
+  const showTapToPlay = isTouchPlayback && isPlayerReady && !playerError &&
+    !hasStartedPlayback;
 
   return (
     <>
       <div
         aria-label={title}
         className={cn(
-          "absolute inset-0 z-0 [&>iframe]:pointer-events-auto [&>iframe]:absolute [&>iframe]:inset-0 [&>iframe]:size-full",
+          "absolute inset-0 z-0 size-full touch-manipulation [&_iframe]:pointer-events-auto [&_iframe]:absolute [&_iframe]:inset-0 [&_iframe]:size-full [&_iframe]:h-full [&_iframe]:w-full [&>div]:absolute [&>div]:inset-0 [&>div]:size-full",
           playerError ? "pointer-events-none opacity-0" : null,
         )}
         ref={containerRef}
       />
+      {showTapToPlay ? (
+        <button
+          aria-label="Play video"
+          className="absolute inset-0 z-10 flex touch-manipulation items-center justify-center bg-black/25"
+          onClick={handleTapToPlay}
+          type="button"
+        >
+          <span className="grid size-20 place-items-center rounded-full border-2 border-white/90 bg-black/45 text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+            <CirclePlayIcon className="ml-1 size-10" />
+          </span>
+        </button>
+      ) : null}
       {playerError ? (
         <div className="absolute inset-0 grid place-items-center bg-vidura-ink p-6 text-center text-white">
           <div className="max-w-sm">
