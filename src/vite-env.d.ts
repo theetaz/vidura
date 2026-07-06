@@ -6,6 +6,7 @@ type YouTubePlayerEvent = {
 
 type YouTubePlayerInstance = {
   destroy: () => void;
+  getCurrentTime: () => number;
 };
 
 type YouTubePlayerOptions = {

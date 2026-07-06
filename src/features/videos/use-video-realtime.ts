@@ -28,22 +28,26 @@ export function useVideoRealtime(enabled: boolean) {
         "postgres_changes",
         { event: "*", schema: "public", table },
         (payload) => {
-          void queryClient.invalidateQueries({
+          void queryClient.refetchQueries({
             queryKey: videoQueryKeys.all,
+            type: "active",
           });
 
           const row = payload.new ?? payload.old;
           const videoId = getVideoId(row);
 
           if (videoId) {
-            void queryClient.invalidateQueries({
+            void queryClient.refetchQueries({
               queryKey: videoQueryKeys.detail(videoId),
+              type: "active",
             });
-            void queryClient.invalidateQueries({
+            void queryClient.refetchQueries({
               queryKey: videoQueryKeys.transcript(videoId),
+              type: "active",
             });
-            void queryClient.invalidateQueries({
+            void queryClient.refetchQueries({
               queryKey: videoQueryKeys.chat(videoId),
+              type: "active",
             });
           }
         },
@@ -52,8 +56,9 @@ export function useVideoRealtime(enabled: boolean) {
 
     channel.subscribe((status) => {
       if (status === "SUBSCRIBED") {
-        void queryClient.invalidateQueries({
+        void queryClient.refetchQueries({
           queryKey: videoQueryKeys.all,
+          type: "active",
         });
       }
     });

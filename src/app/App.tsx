@@ -1,6 +1,7 @@
 import {
   type ChangeEvent,
   type FormEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -319,10 +320,11 @@ function useLibraryVideos(enabled: boolean) {
     enabled,
     refetchInterval: (query) =>
       hasActiveVideoJob(query.state.data as LibraryVideo[] | undefined)
-        ? 2_000
-        : false,
+        ? 1_000
+        : 15_000,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
     staleTime: 0,
   });
 }
@@ -1187,6 +1189,10 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const subtitleEnabled = useAppStore((state) => state.subtitleEnabled);
   const subtitleSize = useAppStore((state) => state.subtitleSize);
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
+  const [playbackTime, setPlaybackTime] = useState<{
+    videoId: string | null;
+    milliseconds: number;
+  }>({ videoId: null, milliseconds: 0 });
   const { videoId } = useParams();
   const navigate = useNavigate();
   const storedSelectedVideoId = useAppStore((state) => state.selectedVideoId);
@@ -1200,12 +1206,33 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
     enabled: Boolean(selectedVideo),
   });
   const selectedTranscript = transcriptQuery.data ?? [];
-  const activeSubtitle = selectedTranscript[1] ?? selectedTranscript[0];
+  const currentPlaybackMs = playbackTime.videoId === selectedVideo?.id
+    ? playbackTime.milliseconds
+    : 0;
+  const activeSubtitle = findActiveTranscriptSegment(
+    selectedTranscript,
+    currentPlaybackMs,
+  );
   const youtubeVideoId = isYouTubeVideoId(selectedVideo?.youtubeVideoId)
     ? selectedVideo.youtubeVideoId
     : null;
   const videoWatchUrl = selectedVideo?.youtubeUrl ??
     (youtubeVideoId ? buildYouTubeWatchUrl(youtubeVideoId) : null);
+  const handlePlaybackTimeChange = useCallback((milliseconds: number) => {
+    setPlaybackTime((currentTime) => {
+      if (
+        currentTime.videoId === selectedVideo?.id &&
+        Math.abs(currentTime.milliseconds - milliseconds) < 250
+      ) {
+        return currentTime;
+      }
+
+      return {
+        videoId: selectedVideo?.id ?? null,
+        milliseconds,
+      };
+    });
+  }, [selectedVideo?.id]);
 
   useEffect(() => {
     if (selectedVideo?.id && selectedVideo.id !== storedSelectedVideoId) {
@@ -1258,6 +1285,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             {youtubeVideoId ? (
               <YouTubePlayerFrame
                 key={youtubeVideoId}
+                onTimeChange={handlePlaybackTimeChange}
                 title={selectedVideo.title}
                 videoId={youtubeVideoId}
                 watchUrl={videoWatchUrl}
@@ -1275,16 +1303,23 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             {subtitleEnabled ? (
               <div
                 className={cn(
-                  "absolute inset-x-4 mx-auto max-w-3xl rounded-md border-2 border-white px-3 py-2 text-center font-black leading-snug text-white shadow-[4px_4px_0_#000]",
-                  youtubeVideoId ? "bottom-6" : "bottom-14",
+                  "absolute inset-x-3 mx-auto max-w-[min(88%,720px)] rounded-md border-2 border-white px-2.5 py-1.5 text-center font-black leading-tight text-white shadow-[4px_4px_0_#000] sm:px-3 sm:py-2 sm:leading-snug",
+                  youtubeVideoId ? "bottom-3 sm:bottom-5" : "bottom-12",
                 )}
                 style={{
                   backgroundColor: `rgb(17 24 39 / ${subtitleOpacity / 100})`,
-                  fontSize: `${subtitleSize}px`,
+                  display: "-webkit-box",
+                  fontSize: `clamp(14px, 3.4vw, ${subtitleSize}px)`,
+                  maxHeight: "4.8em",
+                  overflow: "hidden",
+                  WebkitBoxOrient: "vertical",
+                  WebkitLineClamp: 2,
                 }}
               >
                 {activeSubtitle?.sinhala ??
-                  "Sinhala subtitles will appear after transcript processing."}
+                  (transcriptQuery.isPending
+                    ? "Sinhala subtitles are loading."
+                    : "Subtitles will appear when the video reaches a translated line.")}
               </div>
             ) : null}
             {!youtubeVideoId ? (
@@ -1299,11 +1334,17 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
           </div>
         </StickerCard>
         <div className="grid gap-4 xl:hidden">
-          <TranscriptPanel videoId={selectedVideo.id} />
+          <TranscriptPanel
+            activeSegmentId={activeSubtitle?.id ?? null}
+            videoId={selectedVideo.id}
+          />
           <ChatPanel videoId={selectedVideo.id} />
         </div>
         <div className="hidden xl:block">
-          <TranscriptPanel videoId={selectedVideo.id} />
+          <TranscriptPanel
+            activeSegmentId={activeSubtitle?.id ?? null}
+            videoId={selectedVideo.id}
+          />
         </div>
       </div>
       <aside className="hidden min-h-0 flex-col gap-4 xl:flex">
@@ -1314,21 +1355,92 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   );
 }
 
+function findActiveTranscriptSegment(
+  segments: TranscriptSegment[],
+  playbackMs: number,
+) {
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const activeSegment = segments.find(
+    (segment) => {
+      if (!hasSegmentTiming(segment)) {
+        return false;
+      }
+
+      return playbackMs >= segment.startMs - 500 &&
+        playbackMs < segment.endMs + 250;
+    },
+  );
+
+  if (activeSegment) {
+    return activeSegment;
+  }
+
+  const firstTimedSegment = segments.find(hasSegmentTiming);
+
+  if (!firstTimedSegment || playbackMs < firstTimedSegment.startMs) {
+    return null;
+  }
+
+  return null;
+}
+
+function hasSegmentTiming(
+  segment: TranscriptSegment,
+): segment is TranscriptSegment & { startMs: number; endMs: number } {
+  return typeof segment.startMs === "number" &&
+    typeof segment.endMs === "number";
+}
+
 function YouTubePlayerFrame({
+  onTimeChange,
   title,
   videoId,
   watchUrl,
 }: {
+  onTimeChange: (milliseconds: number) => void;
   title: string;
   videoId: string;
   watchUrl: string | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const playerRef = useRef<YouTubePlayerInstance | null>(null);
+  const lastReportedTimeRef = useRef(-1);
   const [playerError, setPlayerError] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    let timeInterval: ReturnType<typeof window.setInterval> | null = null;
+    const startTimePolling = () => {
+      if (timeInterval) {
+        return;
+      }
+
+      timeInterval = window.setInterval(() => {
+        const player = playerRef.current;
+
+        if (!player || typeof player.getCurrentTime !== "function") {
+          return;
+        }
+
+        const currentTime = player.getCurrentTime();
+
+        if (typeof currentTime !== "number" || Number.isNaN(currentTime)) {
+          return;
+        }
+
+        const milliseconds = Math.max(0, Math.floor(currentTime * 1000));
+
+        if (Math.abs(milliseconds - lastReportedTimeRef.current) < 250) {
+          return;
+        }
+
+        lastReportedTimeRef.current = milliseconds;
+        onTimeChange(milliseconds);
+      }, 250);
+    };
 
     void loadYouTubeIframeApi()
       .then(() => {
@@ -1349,6 +1461,7 @@ function YouTubePlayerFrame({
             rel: 0,
           },
           events: {
+            onReady: startTimePolling,
             onError: (event) => {
               if ([2, 5, 100, 101, 150].includes(event.data)) {
                 setPlayerError(event.data);
@@ -1365,10 +1478,13 @@ function YouTubePlayerFrame({
 
     return () => {
       cancelled = true;
+      if (timeInterval) {
+        window.clearInterval(timeInterval);
+      }
       playerRef.current?.destroy();
       playerRef.current = null;
     };
-  }, [videoId]);
+  }, [onTimeChange, videoId]);
 
   return (
     <>
@@ -1406,7 +1522,13 @@ function YouTubePlayerFrame({
   );
 }
 
-function TranscriptPanel({ videoId }: { videoId: string }) {
+function TranscriptPanel({
+  activeSegmentId,
+  videoId,
+}: {
+  activeSegmentId?: string | null;
+  videoId: string;
+}) {
   const transcriptQuery = useQuery({
     queryKey: videoQueryKeys.transcript(videoId),
     queryFn: () => fetchVideoTranscript(videoId),
@@ -1439,10 +1561,18 @@ function TranscriptPanel({ videoId }: { videoId: string }) {
             </p>
           ) : null}
           <TabsContent className="mt-0" value="sinhala">
-            <TranscriptRows mode="sinhala" segments={selectedTranscript} />
+            <TranscriptRows
+              activeSegmentId={activeSegmentId}
+              mode="sinhala"
+              segments={selectedTranscript}
+            />
           </TabsContent>
           <TabsContent className="mt-0" value="bilingual">
-            <TranscriptRows mode="bilingual" segments={selectedTranscript} />
+            <TranscriptRows
+              activeSegmentId={activeSegmentId}
+              mode="bilingual"
+              segments={selectedTranscript}
+            />
           </TabsContent>
         </CardContent>
       </Tabs>
@@ -1451,22 +1581,34 @@ function TranscriptPanel({ videoId }: { videoId: string }) {
 }
 
 function TranscriptRows({
+  activeSegmentId,
   mode,
   segments,
 }: {
+  activeSegmentId?: string | null;
   mode: "sinhala" | "bilingual";
   segments: TranscriptSegment[];
 }) {
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    activeRowRef.current?.scrollIntoView({
+      block: "nearest",
+      behavior: "smooth",
+    });
+  }, [activeSegmentId]);
+
   return (
     <ScrollArea className="h-[260px] pr-3">
       <div className="flex flex-col gap-2">
-        {segments.map((segment, index) => (
+        {segments.map((segment) => (
           <button
             className={cn(
               "grid grid-cols-[56px_1fr] gap-3 rounded-md border-2 border-foreground bg-card p-3 text-left shadow-[2px_2px_0_var(--vidura-ink)]",
-              index === 1 && "bg-vidura-mint"
+              segment.id === activeSegmentId && "bg-vidura-mint"
             )}
             key={segment.id}
+            ref={segment.id === activeSegmentId ? activeRowRef : null}
             type="button"
           >
             <Badge className="border border-foreground bg-vidura-sun text-foreground">
