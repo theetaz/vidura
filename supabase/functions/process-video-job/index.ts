@@ -238,10 +238,18 @@ Deno.serve(async (request) => {
     );
   }
 
-  // Chained invocations authenticate with the service role key so that
-  // long-running jobs cannot die when the original user JWT expires.
-  const isServiceInvocation =
-    authorization === `Bearer ${supabaseServiceRoleKey}`;
+  // Chained invocations authenticate with a dedicated internal secret so
+  // that long-running jobs cannot die when the original user JWT expires.
+  // (The service role key cannot be used in the Authorization header: on
+  // this platform the injected key is not a JWT, so the gateway's JWT
+  // verification rejects it before the function runs.)
+  const internalChainSecret = Deno.env.get("INTERNAL_CHAIN_SECRET");
+  const isServiceInvocation = Boolean(
+    (internalChainSecret &&
+      request.headers.get("x-internal-chain-secret") ===
+        internalChainSecret) ||
+      authorization === `Bearer ${supabaseServiceRoleKey}`,
+  );
 
   const serviceClient: ServiceClient = createClient<Database>(
     supabaseUrl,
@@ -537,11 +545,18 @@ Deno.serve(async (request) => {
 
       EdgeRuntime.waitUntil(
         startNextProcessingInvocation({
-          // Chain with the service role key: user JWTs expire mid-job on
-          // long videos, which silently killed the chain.
-          authorization: `Bearer ${supabaseServiceRoleKey}`,
+          // With the internal secret configured, the Authorization header
+          // only needs to satisfy the gateway's JWT check — reuse the
+          // caller's anon apikey (a long-lived JWT) instead of the user JWT,
+          // which expires mid-job on long videos; the secret header carries
+          // the actual authorization. Without the secret, fall back to
+          // forwarding the caller's Authorization unchanged.
+          authorization: internalChainSecret
+            ? `Bearer ${request.headers.get("apikey") ?? supabaseAnonKey}`
+            : authorization,
+          internalChainSecret: internalChainSecret ?? null,
           supabaseUrl,
-          supabaseAnonKey,
+          supabaseAnonKey: request.headers.get("apikey") ?? supabaseAnonKey,
           jobId: job.id,
           sourceLanguage,
           targetLanguage,
@@ -984,6 +999,7 @@ async function updateJobState(
 
 async function startNextProcessingInvocation(input: {
   authorization: string;
+  internalChainSecret: string | null;
   supabaseUrl: string;
   supabaseAnonKey: string;
   jobId: string;
@@ -991,15 +1007,21 @@ async function startNextProcessingInvocation(input: {
   targetLanguage: string;
 }) {
   try {
+    const headers: Record<string, string> = {
+      "Authorization": input.authorization,
+      "Content-Type": "application/json",
+      "apikey": input.supabaseAnonKey,
+    };
+
+    if (input.internalChainSecret) {
+      headers["x-internal-chain-secret"] = input.internalChainSecret;
+    }
+
     const response = await fetch(
       `${input.supabaseUrl}/functions/v1/process-video-job`,
       {
         method: "POST",
-        headers: {
-          "Authorization": input.authorization,
-          "Content-Type": "application/json",
-          "apikey": input.supabaseAnonKey,
-        },
+        headers,
         body: JSON.stringify({
           jobId: input.jobId,
           sourceLanguage: input.sourceLanguage,
