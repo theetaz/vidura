@@ -116,6 +116,7 @@ import {
   fetchLibraryVideos,
   fetchVideoTranscript,
   regenerateSubtitles,
+  resumeVideoJob,
   sendVideoChatMessage,
   videoQueryKeys,
   type LibraryVideo,
@@ -239,6 +240,7 @@ function ViduraApp() {
   const videosQuery = useLibraryVideos(auth.configured && Boolean(auth.session));
 
   useVideoRealtime(auth.configured && Boolean(auth.session));
+  useStaleJobRecovery(videosQuery.data);
 
   useEffect(() => {
     if (!videosQuery.data) {
@@ -328,6 +330,55 @@ function useLibraryVideos(enabled: boolean) {
     refetchOnWindowFocus: true,
     refetchOnReconnect: "always",
   });
+}
+
+// A running job that hasn't written a progress update in this long is
+// considered dead: the edge runtime kills invocations at its wall-clock limit
+// without running catch blocks, which used to leave jobs stuck at "running"
+// forever. process-video-job is resumable (it only translates missing
+// segments), so kicking it once brings the job back to life.
+const STALE_JOB_THRESHOLD_MS = 150_000;
+const STALE_JOB_RETRY_COOLDOWN_MS = 120_000;
+
+function useStaleJobRecovery(videos: LibraryVideo[] | undefined) {
+  const queryClient = useQueryClient();
+  const attemptsRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    if (!videos) {
+      return;
+    }
+
+    for (const video of videos) {
+      const job = video.latestJob;
+
+      if (!job || (job.status !== "running" && job.status !== "queued")) {
+        continue;
+      }
+
+      const updatedAt = new Date(job.updatedAt).getTime();
+
+      if (
+        Number.isNaN(updatedAt) ||
+        Date.now() - updatedAt < STALE_JOB_THRESHOLD_MS
+      ) {
+        continue;
+      }
+
+      const lastAttempt = attemptsRef.current.get(job.id) ?? 0;
+
+      if (Date.now() - lastAttempt < STALE_JOB_RETRY_COOLDOWN_MS) {
+        continue;
+      }
+
+      attemptsRef.current.set(job.id, Date.now());
+      void resumeVideoJob(job.id).then(() =>
+        queryClient.invalidateQueries({ queryKey: videoQueryKeys.all })
+      ).catch((resumeError) => {
+        console.error("Failed to resume stale job", job.id, resumeError);
+      });
+    }
+  }, [videos, queryClient]);
 }
 
 function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {

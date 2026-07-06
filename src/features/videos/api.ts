@@ -366,6 +366,23 @@ export async function regenerateSubtitles(input: {
   return data;
 }
 
+export async function resumeVideoJob(jobId: string) {
+  const client = requireSupabase();
+  const { error } = await client.functions.invoke<ProcessVideoJobResponse>(
+    "process-video-job",
+    {
+      body: {
+        jobId,
+        segments: [],
+      },
+    },
+  );
+
+  if (error) {
+    throw error;
+  }
+}
+
 export async function deleteVideo(videoId: string) {
   const client = requireSupabase();
   const { error } = await client.from("videos").delete().eq("id", videoId);
