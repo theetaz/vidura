@@ -1323,8 +1323,12 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
     queryKey: videoQueryKeys.transcript(selectedVideo?.id ?? null),
     queryFn: () => fetchVideoTranscript(selectedVideo?.id ?? null),
     enabled: Boolean(selectedVideo),
+    refetchInterval: isVideoStillProcessing(selectedVideo) ? 2_000 : false,
   });
   const selectedTranscript = transcriptQuery.data ?? [];
+  const subtitlesStillLoading = transcriptQuery.isPending ||
+    transcriptQuery.isFetching ||
+    isVideoStillProcessing(selectedVideo);
   const currentPlaybackMs = playbackTime.videoId === selectedVideo?.id
     ? playbackTime.milliseconds
     : 0;
@@ -1435,10 +1439,16 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
                   WebkitLineClamp: 2,
                 }}
               >
-                {activeSubtitle?.sinhala ??
-                  (transcriptQuery.isPending
-                    ? "Sinhala subtitles are loading."
-                    : "Subtitles will appear when the video reaches a translated line.")}
+                {activeSubtitle?.sinhala ? (
+                  activeSubtitle.sinhala
+                ) : subtitlesStillLoading ? (
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <Loader2Icon className="size-4 shrink-0 animate-spin" />
+                    Sinhala subtitles are loading...
+                  </span>
+                ) : (
+                  "Subtitles will appear when the video reaches a translated line."
+                )}
               </div>
             ) : null}
             {!youtubeVideoId ? (
@@ -1455,6 +1465,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
         <div className="grid gap-4 xl:hidden">
           <TranscriptPanel
             activeSegmentId={activeSubtitle?.id ?? null}
+            isProcessing={isVideoStillProcessing(selectedVideo)}
             videoId={selectedVideo.id}
           />
           <ChatPanel videoId={selectedVideo.id} />
@@ -1462,6 +1473,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
         <div className="hidden xl:block">
           <TranscriptPanel
             activeSegmentId={activeSubtitle?.id ?? null}
+            isProcessing={isVideoStillProcessing(selectedVideo)}
             videoId={selectedVideo.id}
           />
         </div>
@@ -1643,16 +1655,20 @@ function YouTubePlayerFrame({
 
 function TranscriptPanel({
   activeSegmentId,
+  isProcessing = false,
   videoId,
 }: {
   activeSegmentId?: string | null;
+  isProcessing?: boolean;
   videoId: string;
 }) {
   const transcriptQuery = useQuery({
     queryKey: videoQueryKeys.transcript(videoId),
     queryFn: () => fetchVideoTranscript(videoId),
+    refetchInterval: isProcessing ? 2_000 : false,
   });
   const selectedTranscript = transcriptQuery.data ?? [];
+  const isLoading = transcriptQuery.isPending || transcriptQuery.isFetching;
 
   return (
     <StickerCard>
@@ -1667,14 +1683,20 @@ function TranscriptPanel({
               <TabsTrigger value="bilingual">Bilingual</TabsTrigger>
             </TabsList>
           </div>
+          {isLoading || isProcessing ? (
+            <div className="mt-3">
+              <InlineLoadingNotice
+                label={
+                  isLoading
+                    ? "Loading Sinhala subtitles..."
+                    : "Translating more subtitle lines..."
+                }
+              />
+            </div>
+          ) : null}
         </CardHeader>
         <CardContent>
-          {transcriptQuery.isPending ? (
-            <p className="text-sm font-black text-foreground/60">
-              Loading transcript...
-            </p>
-          ) : null}
-          {!transcriptQuery.isPending && selectedTranscript.length === 0 ? (
+          {!isLoading && !isProcessing && selectedTranscript.length === 0 ? (
             <p className="text-sm font-black text-foreground/60">
               Transcript lines will appear here as processing stores them.
             </p>
@@ -1682,6 +1704,7 @@ function TranscriptPanel({
           <TabsContent className="mt-0" value="sinhala">
             <TranscriptRows
               activeSegmentId={activeSegmentId}
+              isLoading={isLoading || isProcessing}
               mode="sinhala"
               segments={selectedTranscript}
             />
@@ -1689,6 +1712,7 @@ function TranscriptPanel({
           <TabsContent className="mt-0" value="bilingual">
             <TranscriptRows
               activeSegmentId={activeSegmentId}
+              isLoading={isLoading || isProcessing}
               mode="bilingual"
               segments={selectedTranscript}
             />
@@ -1701,10 +1725,12 @@ function TranscriptPanel({
 
 function TranscriptRows({
   activeSegmentId,
+  isLoading = false,
   mode,
   segments,
 }: {
   activeSegmentId?: string | null;
+  isLoading?: boolean;
   mode: "sinhala" | "bilingual";
   segments: TranscriptSegment[];
 }) {
@@ -1720,6 +1746,11 @@ function TranscriptRows({
   return (
     <ScrollArea className="h-[260px] pr-3">
       <div className="flex flex-col gap-2">
+        {segments.length === 0 && isLoading ? (
+          <div className="rounded-md border-2 border-dashed border-foreground bg-vidura-cream p-4">
+            <InlineLoadingNotice label="Waiting for the first translated lines..." />
+          </div>
+        ) : null}
         {segments.map((segment) => (
           <button
             className={cn(
@@ -1747,6 +1778,11 @@ function TranscriptRows({
             </span>
           </button>
         ))}
+        {segments.length > 0 && isLoading ? (
+          <div className="rounded-md border-2 border-dashed border-foreground bg-vidura-cream p-3">
+            <InlineLoadingNotice label="More subtitles are on the way..." />
+          </div>
+        ) : null}
       </div>
     </ScrollArea>
   );
