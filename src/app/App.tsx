@@ -39,6 +39,7 @@ import {
   Minimize2Icon,
   MessageCircleIcon,
   MoreHorizontalIcon,
+  PauseIcon,
   PlusIcon,
   SearchIcon,
   SendIcon,
@@ -1656,6 +1657,7 @@ function YouTubePlayerFrame({
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [isTouchPlayback, setIsTouchPlayback] = useState(false);
   const [hasStartedPlayback, setHasStartedPlayback] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   useEffect(() => {
     onTimeChangeRef.current = onTimeChange;
@@ -1665,7 +1667,7 @@ function YouTubePlayerFrame({
     function updateTouchPlayback() {
       setIsTouchPlayback(
         window.matchMedia("(pointer: coarse)").matches ||
-          window.matchMedia("(max-width: 1023px)").matches,
+        window.matchMedia("(max-width: 1023px)").matches,
       );
     }
 
@@ -1698,6 +1700,9 @@ function YouTubePlayerFrame({
 
         if (playerState === 1 || playerState === 3) {
           setHasStartedPlayback(true);
+          setIsPlaying(true);
+        } else if (playerState === 2 || playerState === 0 || playerState === 5) {
+          setIsPlaying(false);
         }
 
         const currentTime = player.getCurrentTime();
@@ -1720,6 +1725,7 @@ function YouTubePlayerFrame({
     setPlayerError(null);
     setIsPlayerReady(false);
     setHasStartedPlayback(false);
+    setIsPlaying(false);
 
     void loadYouTubeIframeApi()
       .then(() => {
@@ -1753,6 +1759,9 @@ function YouTubePlayerFrame({
             onStateChange: (event) => {
               if (event.data === 1 || event.data === 3) {
                 setHasStartedPlayback(true);
+                setIsPlaying(true);
+              } else if (event.data === 2 || event.data === 0 || event.data === 5) {
+                setIsPlaying(false);
               }
             },
             onError: (event) => {
@@ -1779,19 +1788,38 @@ function YouTubePlayerFrame({
     };
   }, [videoId]);
 
-  function handleTapToPlay() {
+  function handleTogglePlayback() {
     const player = playerRef.current;
 
-    if (!player || typeof player.playVideo !== "function") {
+    if (!player) {
       return;
     }
 
-    player.playVideo();
+    const playerState = typeof player.getPlayerState === "function"
+      ? player.getPlayerState()
+      : -1;
+
+    if (playerState === 1 || playerState === 3) {
+      if (typeof player.pauseVideo === "function") {
+        player.pauseVideo();
+      }
+
+      setIsPlaying(false);
+      return;
+    }
+
+    if (typeof player.playVideo === "function") {
+      player.playVideo();
+    }
+
     setHasStartedPlayback(true);
+    setIsPlaying(true);
   }
 
-  const showTapToPlay = isTouchPlayback && isPlayerReady && !playerError &&
+  const showCenterPlay = isTouchPlayback && isPlayerReady && !playerError &&
     !hasStartedPlayback;
+  const showMobilePlaybackControl = isTouchPlayback && isPlayerReady && !playerError &&
+    hasStartedPlayback;
 
   return (
     <>
@@ -1803,16 +1831,30 @@ function YouTubePlayerFrame({
         )}
         ref={containerRef}
       />
-      {showTapToPlay ? (
+      {showCenterPlay ? (
         <button
           aria-label="Play video"
           className="absolute inset-0 z-10 flex touch-manipulation items-center justify-center bg-black/25"
-          onClick={handleTapToPlay}
+          onClick={handleTogglePlayback}
           type="button"
         >
           <span className="grid size-20 place-items-center rounded-full border-2 border-white/90 bg-black/45 text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
             <CirclePlayIcon className="ml-1 size-10" />
           </span>
+        </button>
+      ) : null}
+      {showMobilePlaybackControl ? (
+        <button
+          aria-label={isPlaying ? "Pause video" : "Play video"}
+          className="pointer-events-auto absolute bottom-3 left-3 z-30 grid size-12 place-items-center rounded-full border-2 border-white/90 bg-black/60 text-white shadow-[0_6px_18px_rgba(0,0,0,0.45)] touch-manipulation"
+          onClick={handleTogglePlayback}
+          type="button"
+        >
+          {isPlaying ? (
+            <PauseIcon className="size-6" />
+          ) : (
+            <CirclePlayIcon className="ml-0.5 size-6" />
+          )}
         </button>
       ) : null}
       {playerError ? (

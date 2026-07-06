@@ -8,6 +8,7 @@ type YouTubePlayerInstance = {
   destroy: () => void;
   getCurrentTime: () => number;
   getPlayerState: () => number;
+  pauseVideo: () => void;
   playVideo: () => void;
 };
 
