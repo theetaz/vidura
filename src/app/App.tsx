@@ -2545,6 +2545,12 @@ function ChatBubble({
   role: "user" | "assistant";
   streaming?: boolean;
 }) {
+  // The model is instructed to write plain text, but occasionally emits
+  // markdown emphasis anyway — strip it so bubbles never show raw asterisks.
+  const displayContent = role === "assistant"
+    ? content.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*\*/g, "")
+    : content;
+
   return (
     <div
       className={cn(
@@ -2552,7 +2558,7 @@ function ChatBubble({
         role === "user" ? "ml-auto bg-vidura-purple" : "bg-card",
       )}
     >
-      {content}
+      {displayContent}
       {streaming ? (
         <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-foreground/70 align-text-bottom" />
       ) : null}
