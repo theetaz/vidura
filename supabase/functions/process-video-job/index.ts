@@ -24,6 +24,17 @@ type TranslationResult = {
   text: string;
 };
 
+type TranslationContext = {
+  topic: string;
+  summary: string;
+  audience: string;
+  translationGuidelines: string;
+  keyTerms: Array<{
+    source: string;
+    preferredSinhala: string;
+  }>;
+};
+
 type NormalizedTranscriptSegment = {
   index: number;
   startMs: number;
@@ -356,6 +367,63 @@ Deno.serve(async (request) => {
     const translatedCount = transcriptSegments.length -
       untranslatedSegments.length;
 
+    const { data: jobRecord } = await serviceClient
+      .from("processing_jobs")
+      .select("metadata")
+      .eq("id", job.id)
+      .single();
+    const existingMetadata = (jobRecord?.metadata ?? {}) as Record<
+      string,
+      unknown
+    >;
+    let translationContext = parseTranslationContext(
+      existingMetadata.translation_context,
+    );
+
+    const { data: videoDetails } = await serviceClient
+      .from("videos")
+      .select("title, channel_title")
+      .eq("id", job.video_id)
+      .single();
+
+    if (!translationContext) {
+      await updateJobState(serviceClient, job.id, job.video_id, {
+        jobStatus: "running",
+        videoStatus: "translating",
+        progress: calculateTranslationProgress(
+          translatedCount,
+          transcriptSegments.length,
+        ),
+        metadata: {
+          ...existingMetadata,
+          stage: "building_translation_context",
+          total_segments: transcriptSegments.length,
+          translated_segments: translatedCount,
+        },
+      });
+
+      translationContext = await buildTranslationContext({
+        apiKey: openRouterApiKey,
+        model: openRouterModel,
+        sourceLanguage,
+        targetLanguage,
+        videoTitle: videoDetails?.title ?? null,
+        channelTitle: videoDetails?.channel_title ?? null,
+        segments: transcriptSegments,
+      });
+
+      await mergeJobMetadata(serviceClient, job.id, {
+        translation_context: translationContext,
+      });
+    }
+
+    const existingTranslations = await fetchExistingTranslationsByIndex(
+      serviceClient,
+      job.video_id,
+      targetLanguage,
+      storedSegments,
+    );
+
     await updateJobState(serviceClient, job.id, job.video_id, {
       jobStatus: "running",
       videoStatus: "translating",
@@ -382,6 +450,11 @@ Deno.serve(async (request) => {
       apiKey: openRouterApiKey,
       storedSegments,
       segments: segmentsForThisInvocation,
+      allSegments: transcriptSegments,
+      translationContext,
+      videoTitle: videoDetails?.title ?? null,
+      channelTitle: videoDetails?.channel_title ?? null,
+      existingTranslations,
       totalSegments: transcriptSegments.length,
       initialTranslatedSegments: translatedCount,
     });
@@ -810,11 +883,22 @@ async function updateJobState(
   },
 ) {
   const now = new Date().toISOString();
+  const { data: jobRecord } = await serviceClient
+    .from("processing_jobs")
+    .select("metadata")
+    .eq("id", jobId)
+    .single();
+  const currentMetadata = (jobRecord?.metadata ?? {}) as Record<string, unknown>;
   const jobUpdate: Database["public"]["Tables"]["processing_jobs"]["Update"] = {
     status: state.jobStatus,
     progress: state.progress,
     error_message: state.errorMessage ?? null,
-    metadata: state.metadata,
+    metadata: state.metadata
+      ? {
+        ...currentMetadata,
+        ...state.metadata,
+      }
+      : currentMetadata,
   };
 
   if (state.jobStatus === "running") {
@@ -981,104 +1065,131 @@ function calculateTranslationProgress(position: number, totalSegments: number) {
   return Math.min(95, 25 + Math.floor((position / totalSegments) * 70));
 }
 
-async function translateBatches(input: {
-  serviceClient: ServiceClient;
-  jobId: string;
-  videoId: string;
-  apiKey: string;
-  model: string;
-  sourceLanguage: string;
-  targetLanguage: string;
-  storedSegments: StoredSegment[];
-  segments: NormalizedTranscriptSegment[];
-  totalSegments: number;
-  initialTranslatedSegments: number;
-}) {
-  const batches = chunkSegments(input.segments, 25).map((segments, index) => ({
-    index,
-    segments,
-  }));
-  const translations: TranslationResult[] = [];
-  let nextBatchIndex = 0;
-  let translatedSegments = input.initialTranslatedSegments;
+async function mergeJobMetadata(
+  serviceClient: ServiceClient,
+  jobId: string,
+  metadataPatch: Record<string, unknown>,
+) {
+  const { data: jobRecord, error } = await serviceClient
+    .from("processing_jobs")
+    .select("metadata")
+    .eq("id", jobId)
+    .single();
 
-  async function processNextBatch() {
-    while (nextBatchIndex < batches.length) {
-      const batch = batches[nextBatchIndex];
-      nextBatchIndex += 1;
-      const currentSegment = batch.segments[0];
+  if (error) {
+    throw new Error("Failed to read processing job metadata");
+  }
 
-      await updateJobState(input.serviceClient, input.jobId, input.videoId, {
-        jobStatus: "running",
-        videoStatus: "translating",
-        progress: calculateTranslationProgress(
-          translatedSegments,
-          input.totalSegments,
-        ),
-        metadata: {
-          stage: "translating",
-          total_segments: input.totalSegments,
-          translated_segments: translatedSegments,
-          active_batch: batch.index + 1,
-          total_batches: batches.length,
-          current_segment_index: currentSegment.index,
-          current_segment_start_ms: currentSegment.startMs,
-          current_segment_text: currentSegment.text,
-        },
-      });
+  const currentMetadata = (jobRecord?.metadata ?? {}) as Record<string, unknown>;
+  const { error: updateError } = await serviceClient
+    .from("processing_jobs")
+    .update({
+      metadata: {
+        ...currentMetadata,
+        ...metadataPatch,
+      },
+    })
+    .eq("id", jobId);
 
-      const batchTranslations = await translateCompleteBatch({
-        apiKey: input.apiKey,
-        model: input.model,
-        sourceLanguage: input.sourceLanguage,
-        targetLanguage: input.targetLanguage,
-        segments: batch.segments,
-      });
+  if (updateError) {
+    throw new Error("Failed to update processing job metadata");
+  }
+}
 
-      await upsertTranslatedSegments(
-        input.serviceClient,
-        input.videoId,
-        input.targetLanguage,
-        input.model,
-        input.storedSegments,
-        batchTranslations,
-      );
+function parseTranslationContext(value: unknown): TranslationContext | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
 
-      translations.push(...batchTranslations);
-      translatedSegments += batchTranslations.length;
+  const record = value as Record<string, unknown>;
+  const topic = typeof record.topic === "string" ? record.topic.trim() : "";
+  const summary = typeof record.summary === "string"
+    ? record.summary.trim()
+    : "";
+  const audience = typeof record.audience === "string"
+    ? record.audience.trim()
+    : "";
+  const translationGuidelines =
+    typeof record.translationGuidelines === "string"
+      ? record.translationGuidelines.trim()
+      : "";
+  const keyTerms = Array.isArray(record.keyTerms)
+    ? record.keyTerms.flatMap((item) => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
 
-      await updateJobState(input.serviceClient, input.jobId, input.videoId, {
-        jobStatus: "running",
-        videoStatus: "translating",
-        progress: calculateTranslationProgress(
-          translatedSegments,
-          input.totalSegments,
-        ),
-        metadata: {
-          stage: "translating",
-          total_segments: input.totalSegments,
-          translated_segments: translatedSegments,
-          completed_batches: batch.index + 1,
-          total_batches: batches.length,
-        },
-      });
+      const term = item as Record<string, unknown>;
+      const source = typeof term.source === "string" ? term.source.trim() : "";
+      const preferredSinhala = typeof term.preferredSinhala === "string"
+        ? term.preferredSinhala.trim()
+        : "";
+
+      if (!source || !preferredSinhala) {
+        return [];
+      }
+
+      return [{ source, preferredSinhala }];
+    })
+    : [];
+
+  if (!topic || !summary || !translationGuidelines) {
+    return null;
+  }
+
+  return {
+    topic,
+    summary,
+    audience: audience || "Sinhala-speaking learners",
+    translationGuidelines,
+    keyTerms,
+  };
+}
+
+async function fetchExistingTranslationsByIndex(
+  serviceClient: ServiceClient,
+  videoId: string,
+  targetLanguage: string,
+  storedSegments: StoredSegment[],
+) {
+  const segmentIdByIndex = new Map(
+    storedSegments.map((segment) => [segment.id, segment.segment_index]),
+  );
+  const segmentIds = storedSegments.map((segment) => segment.id);
+  const translationsByIndex = new Map<number, string>();
+
+  if (segmentIds.length === 0) {
+    return translationsByIndex;
+  }
+
+  const { data, error } = await serviceClient
+    .from("translated_segments")
+    .select("segment_id, text")
+    .eq("video_id", videoId)
+    .eq("language_code", targetLanguage)
+    .in("segment_id", segmentIds);
+
+  if (error) {
+    throw new Error("Failed to read existing translated segments");
+  }
+
+  for (const row of (data ?? []) as Array<{ segment_id: string; text: string }>) {
+    const index = segmentIdByIndex.get(row.segment_id);
+
+    if (typeof index === "number" && row.text.trim()) {
+      translationsByIndex.set(index, row.text.trim());
     }
   }
 
-  const workerCount = Math.min(4, batches.length);
-  await Promise.all(
-    Array.from({ length: workerCount }, () => processNextBatch()),
-  );
-
-  return translations;
+  return translationsByIndex;
 }
 
-async function translateSegmentBatch(input: {
+async function requestOpenRouterJson<T>(input: {
   apiKey: string;
   model: string;
-  sourceLanguage: string;
-  targetLanguage: string;
-  segments: NormalizedTranscriptSegment[];
+  system: string;
+  user: Record<string, unknown>;
+  temperature?: number;
 }) {
   const response = await fetch(openRouterUrl, {
     method: "POST",
@@ -1091,42 +1202,260 @@ async function translateSegmentBatch(input: {
     body: JSON.stringify({
       model: input.model,
       messages: [
-        {
-          role: "system",
-          content:
-            "You translate educational video transcript segments to Sinhala. Preserve meaning, terminology, and segment alignment. Return only valid JSON.",
-        },
+        { role: "system", content: input.system },
         {
           role: "user",
-          content: JSON.stringify({
-            sourceLanguage: input.sourceLanguage,
-            targetLanguage: input.targetLanguage,
-            instructions:
-              'Translate every segment. Keep each index value unchanged. Return one JSON object shaped as {"translations":[{"index":0,"text":"..."}]} and no other keys.',
-            segments: input.segments.map((segment) => ({
-              index: segment.index,
-              text: segment.text,
-            })),
-          }),
+          content: JSON.stringify(input.user),
         },
       ],
-      temperature: 0.2,
+      temperature: input.temperature ?? 0.2,
       response_format: { type: "json_object" },
     }),
   });
 
   if (!response.ok) {
-    throw new Error(`OpenRouter translation failed with ${response.status}`);
+    throw new Error(`OpenRouter request failed with ${response.status}`);
   }
 
   const completion = await response.json();
   const content = completion?.choices?.[0]?.message?.content;
 
   if (typeof content !== "string") {
-    throw new Error("OpenRouter returned an invalid translation response");
+    throw new Error("OpenRouter returned an invalid JSON response");
   }
 
-  return parseTranslationContent(content, input.segments);
+  const jsonText = content
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "");
+
+  return JSON.parse(jsonText) as T;
+}
+
+async function buildTranslationContext(input: {
+  apiKey: string;
+  model: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  videoTitle: string | null;
+  channelTitle: string | null;
+  segments: NormalizedTranscriptSegment[];
+}) {
+  const parsed = await requestOpenRouterJson<Record<string, unknown>>({
+    apiKey: input.apiKey,
+    model: input.model,
+    system:
+      "You prepare translation context for educational YouTube videos that will be localized into natural spoken Sinhala. Return only valid JSON.",
+    user: {
+      task: "Analyze the full transcript and produce translation context.",
+      sourceLanguage: input.sourceLanguage,
+      targetLanguage: input.targetLanguage,
+      videoTitle: input.videoTitle,
+      channelTitle: input.channelTitle,
+      transcript: input.segments.map((segment) => ({
+        index: segment.index,
+        text: segment.text,
+      })),
+      instructions:
+        'Return one JSON object shaped as {"topic":"...","summary":"...","audience":"...","translationGuidelines":"...","keyTerms":[{"source":"...","preferredSinhala":"..."}]}. The summary should explain the whole video. translationGuidelines must tell a translator to produce natural native Sinhala, not literal English-to-Sinhala wording, while keeping educational clarity.',
+    },
+    temperature: 0.1,
+  });
+
+  const context = parseTranslationContext(parsed);
+
+  if (!context) {
+    throw new Error("Failed to build translation context");
+  }
+
+  return context;
+}
+
+function buildLocalTranscriptWindow(
+  allSegments: NormalizedTranscriptSegment[],
+  batchSegments: NormalizedTranscriptSegment[],
+  radius = 4,
+) {
+  if (batchSegments.length === 0) {
+    return [];
+  }
+
+  const minIndex = Math.min(...batchSegments.map((segment) => segment.index));
+  const maxIndex = Math.max(...batchSegments.map((segment) => segment.index));
+
+  return allSegments
+    .filter((segment) =>
+      segment.index >= minIndex - radius && segment.index <= maxIndex + radius
+    )
+    .map((segment) => ({
+      index: segment.index,
+      text: segment.text,
+    }));
+}
+
+function buildPriorTranslations(
+  batchSegments: NormalizedTranscriptSegment[],
+  existingTranslations: Map<number, string>,
+  limit = 6,
+) {
+  const firstIndex = batchSegments[0]?.index ?? 0;
+
+  return Array.from(existingTranslations.entries())
+    .filter(([index]) => index < firstIndex)
+    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+    .slice(-limit)
+    .map(([index, text]) => ({ index, text }));
+}
+
+async function translateBatches(input: {
+  serviceClient: ServiceClient;
+  jobId: string;
+  videoId: string;
+  apiKey: string;
+  model: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  storedSegments: StoredSegment[];
+  segments: NormalizedTranscriptSegment[];
+  allSegments: NormalizedTranscriptSegment[];
+  translationContext: TranslationContext;
+  videoTitle: string | null;
+  channelTitle: string | null;
+  existingTranslations: Map<number, string>;
+  totalSegments: number;
+  initialTranslatedSegments: number;
+}) {
+  const batches = chunkSegments(input.segments, 20).map((segments, index) => ({
+    index,
+    segments,
+  }));
+  const translations: TranslationResult[] = [];
+  const translationsByIndex = new Map(input.existingTranslations);
+  let translatedSegments = input.initialTranslatedSegments;
+
+  for (const batch of batches) {
+    const currentSegment = batch.segments[0];
+
+    await updateJobState(input.serviceClient, input.jobId, input.videoId, {
+      jobStatus: "running",
+      videoStatus: "translating",
+      progress: calculateTranslationProgress(
+        translatedSegments,
+        input.totalSegments,
+      ),
+      metadata: {
+        stage: "translating",
+        total_segments: input.totalSegments,
+        translated_segments: translatedSegments,
+        active_batch: batch.index + 1,
+        total_batches: batches.length,
+        current_segment_index: currentSegment.index,
+        current_segment_start_ms: currentSegment.startMs,
+        current_segment_text: currentSegment.text,
+      },
+    });
+
+    const batchTranslations = await translateCompleteBatch({
+      apiKey: input.apiKey,
+      model: input.model,
+      sourceLanguage: input.sourceLanguage,
+      targetLanguage: input.targetLanguage,
+      segments: batch.segments,
+      allSegments: input.allSegments,
+      translationContext: input.translationContext,
+      videoTitle: input.videoTitle,
+      channelTitle: input.channelTitle,
+      priorTranslations: buildPriorTranslations(
+        batch.segments,
+        translationsByIndex,
+      ),
+      localTranscriptWindow: buildLocalTranscriptWindow(
+        input.allSegments,
+        batch.segments,
+      ),
+    });
+
+    await upsertTranslatedSegments(
+      input.serviceClient,
+      input.videoId,
+      input.targetLanguage,
+      input.model,
+      input.storedSegments,
+      batchTranslations,
+    );
+
+    for (const translation of batchTranslations) {
+      translationsByIndex.set(translation.index, translation.text);
+    }
+
+    translations.push(...batchTranslations);
+    translatedSegments += batchTranslations.length;
+
+    await updateJobState(input.serviceClient, input.jobId, input.videoId, {
+      jobStatus: "running",
+      videoStatus: "translating",
+      progress: calculateTranslationProgress(
+        translatedSegments,
+        input.totalSegments,
+      ),
+      metadata: {
+        stage: "translating",
+        total_segments: input.totalSegments,
+        translated_segments: translatedSegments,
+        completed_batches: batch.index + 1,
+        total_batches: batches.length,
+      },
+    });
+  }
+
+  return translations;
+}
+
+async function translateSegmentBatch(input: {
+  apiKey: string;
+  model: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  segments: NormalizedTranscriptSegment[];
+  allSegments: NormalizedTranscriptSegment[];
+  translationContext: TranslationContext;
+  videoTitle: string | null;
+  channelTitle: string | null;
+  priorTranslations: Array<{ index: number; text: string }>;
+  localTranscriptWindow: Array<{ index: number; text: string }>;
+}) {
+  const parsed = await requestOpenRouterJson<Record<string, unknown>>({
+    apiKey: input.apiKey,
+    model: input.model,
+    system:
+      "You localize educational video subtitles into natural spoken Sinhala (සිංහල). Understand the full video context first, then translate only the requested timestamped segments so they read like native Sinhala narration, not word-for-word English. Preserve meaning, timing fit, and terminology consistency. Return only valid JSON.",
+    user: {
+      sourceLanguage: input.sourceLanguage,
+      targetLanguage: input.targetLanguage,
+      videoTitle: input.videoTitle,
+      channelTitle: input.channelTitle,
+      videoContext: input.translationContext,
+      fullTranscript: input.allSegments.map((segment) => ({
+        index: segment.index,
+        text: segment.text,
+      })),
+      nearbyTranscript: input.localTranscriptWindow,
+      priorSinhalaTranslations: input.priorTranslations,
+      segmentsToTranslate: input.segments.map((segment) => ({
+        index: segment.index,
+        text: segment.text,
+      })),
+      instructions:
+        'Read the full transcript and videoContext before translating. Produce fluent native Sinhala that a learner would find easy to follow while watching the video. Avoid literal calques, awkward English sentence order, and unnecessary transliteration. Keep each output segment aligned to its index and concise enough for on-screen subtitles. Return one JSON object shaped as {"translations":[{"index":0,"text":"..."}]} and no other keys.',
+    },
+    temperature: 0.35,
+  });
+
+  return parseTranslationContent(
+    JSON.stringify(parsed),
+    input.segments,
+  );
 }
 
 async function translateCompleteBatch(input: {
@@ -1135,6 +1464,12 @@ async function translateCompleteBatch(input: {
   sourceLanguage: string;
   targetLanguage: string;
   segments: NormalizedTranscriptSegment[];
+  allSegments: NormalizedTranscriptSegment[];
+  translationContext: TranslationContext;
+  videoTitle: string | null;
+  channelTitle: string | null;
+  priorTranslations: Array<{ index: number; text: string }>;
+  localTranscriptWindow: Array<{ index: number; text: string }>;
 }) {
   const translations = await translateSegmentBatch(input);
   const translationByIndex = new Map(
