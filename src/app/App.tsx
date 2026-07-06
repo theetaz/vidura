@@ -300,16 +300,6 @@ function ViduraApp() {
             <Route element={<Navigate replace to="/library" />} path="*" />
           </Routes>
         </main>
-        {auth.configured ? (
-          <Button
-            className="fixed right-4 top-4 z-40 hidden border-2 border-foreground bg-card lg:inline-flex"
-            onClick={auth.signOut}
-            size="sm"
-            variant="outline"
-          >
-            Sign out
-          </Button>
-        ) : null}
         <MobileNav />
       </div>
     </div>
@@ -423,6 +413,7 @@ function AuthScreen({
 }
 
 function TopBar() {
+  const auth = useAuth();
   const location = useLocation();
   const selectedVideoId = useAppStore((state) => state.selectedVideoId);
   const currentView = viewFromPath(location.pathname);
@@ -435,38 +426,52 @@ function TopBar() {
   }[currentView];
 
   return (
-    <header className="mb-4 flex items-center justify-between gap-3 lg:hidden">
-      <div>
-        <p className="font-display text-3xl font-black leading-none tracking-normal">
+    <header className="mb-4 flex items-center justify-between gap-3 sm:mb-5 lg:hidden">
+      <div className="min-w-0">
+        <p className="truncate font-display text-3xl font-black leading-none tracking-normal">
           {title}
         </p>
-        <p className="text-sm font-medium text-foreground/55">
+        <p className="truncate text-sm font-medium text-foreground/55">
           Learn better, one video at a time.
         </p>
       </div>
       <Sheet>
         <SheetTrigger asChild>
-          <Button className="vidura-icon-button" size="icon-lg" variant="outline">
+          <Button className="vidura-icon-button shrink-0" size="icon-lg" variant="outline">
             <MenuIcon />
             <span className="sr-only">Open menu</span>
           </Button>
         </SheetTrigger>
-        <SheetContent className="border-2 border-foreground bg-background" side="left">
-          <SheetHeader>
-            <SheetTitle className="font-display text-3xl font-black">
-              Vidura
-            </SheetTitle>
-            <SheetDescription>
-              Your playful Sinhala study companion.
-            </SheetDescription>
+        <SheetContent
+          className="flex w-[min(100vw-1.5rem,18rem)] flex-col border-2 border-foreground bg-background p-0 sm:max-w-xs"
+          side="left"
+        >
+          <SheetHeader className="border-b-2 border-foreground px-4 py-4">
+            <div className="flex items-center gap-2.5 pr-8">
+              <div className="grid size-11 place-items-center rounded-lg border-2 border-foreground bg-vidura-sun shadow-[3px_3px_0_var(--vidura-ink)]">
+                <BookOpenIcon />
+              </div>
+              <div className="min-w-0">
+                <SheetTitle className="truncate font-display text-3xl font-black">
+                  Vidura
+                </SheetTitle>
+                <SheetDescription className="truncate font-semibold text-foreground/55">
+                  Your playful Sinhala study companion.
+                </SheetDescription>
+              </div>
+            </div>
           </SheetHeader>
-          <div className="flex flex-col gap-2 px-4">
+          <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-4 py-4">
             {navItems.map(({ view, label, Icon }) => (
               <Button
                 asChild
-                className="justify-start"
+                className={cn(
+                  "h-10 justify-start rounded-md border-2 border-transparent px-2 text-sm font-black",
+                  currentView === view &&
+                    "border-foreground bg-vidura-mint text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint"
+                )}
                 key={view}
-                variant={currentView === view ? "default" : "ghost"}
+                variant={currentView === view ? "secondary" : "ghost"}
               >
                 <NavLink to={navPathFor(view, selectedVideoId)}>
                   <Icon data-icon="inline-start" />
@@ -475,6 +480,11 @@ function TopBar() {
               </Button>
             ))}
           </div>
+          {auth.configured && auth.user ? (
+            <SheetFooter className="border-t-2 border-foreground bg-card/60 px-4 py-4">
+              <SidebarProfileFooter onSignOut={auth.signOut} user={auth.user} />
+            </SheetFooter>
+          ) : null}
         </SheetContent>
       </Sheet>
     </header>
