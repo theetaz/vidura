@@ -130,7 +130,7 @@ import {
   isYouTubeVideoId,
   parseYouTubeUrl,
 } from "@/lib/youtube";
-import { useAppStore, type AppView } from "@/stores/app-store";
+import { useAppStore, type AppView, type SubtitlePlacement } from "@/stores/app-store";
 import {
   CartoonButton,
   MascotBubble,
@@ -1318,8 +1318,64 @@ function ProcessingScreen({
   );
 }
 
+function SubtitleCaption({
+  activeSubtitle,
+  subtitlesStillLoading,
+  subtitleOpacity,
+  subtitleSize,
+  variant,
+}: {
+  activeSubtitle: TranscriptSegment | null;
+  subtitlesStillLoading: boolean;
+  subtitleOpacity: number;
+  subtitleSize: number;
+  variant: SubtitlePlacement;
+}) {
+  const content = activeSubtitle?.sinhala ? (
+    activeSubtitle.sinhala
+  ) : subtitlesStillLoading ? (
+    <span className="inline-flex items-center justify-center gap-2">
+      <Loader2Icon className="size-4 shrink-0 animate-spin" />
+      Sinhala subtitles are loading...
+    </span>
+  ) : (
+    "Subtitles will appear when the video reaches a translated line."
+  );
+
+  if (variant === "overlay") {
+    return (
+      <div
+        className="pointer-events-none absolute inset-x-3 bottom-3 z-10 mx-auto max-w-[min(88%,720px)] rounded-md border-2 border-white px-2.5 py-1.5 text-center font-black leading-tight text-white shadow-[4px_4px_0_#000] sm:bottom-5 sm:px-3 sm:py-2 sm:leading-snug"
+        style={{
+          backgroundColor: `rgb(17 24 39 / ${subtitleOpacity / 100})`,
+          display: "-webkit-box",
+          fontSize: `clamp(14px, 3.4vw, ${subtitleSize}px)`,
+          maxHeight: "4.8em",
+          overflow: "hidden",
+          WebkitBoxOrient: "vertical",
+          WebkitLineClamp: 2,
+        }}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-md border-2 border-foreground bg-card px-3 py-2.5 text-center font-black leading-snug text-foreground shadow-[3px_3px_0_var(--vidura-ink)]"
+      style={{
+        fontSize: `clamp(14px, 3.4vw, ${subtitleSize}px)`,
+      }}
+    >
+      {content}
+    </div>
+  );
+}
+
 function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const subtitleEnabled = useAppStore((state) => state.subtitleEnabled);
+  const subtitlePlacement = useAppStore((state) => state.subtitlePlacement);
   const subtitleSize = useAppStore((state) => state.subtitleSize);
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
   const [playbackTime, setPlaybackTime] = useState<{
@@ -1437,33 +1493,14 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
                 </div>
               </>
             )}
-            {subtitleEnabled ? (
-              <div
-                className={cn(
-                  "pointer-events-none absolute inset-x-3 z-10 mx-auto max-w-[min(88%,720px)] rounded-md border-2 border-white px-2.5 py-1.5 text-center font-black leading-tight text-white shadow-[4px_4px_0_#000] sm:px-3 sm:py-2 sm:leading-snug",
-                  youtubeVideoId ? "bottom-3 sm:bottom-5" : "bottom-12",
-                )}
-                style={{
-                  backgroundColor: `rgb(17 24 39 / ${subtitleOpacity / 100})`,
-                  display: "-webkit-box",
-                  fontSize: `clamp(14px, 3.4vw, ${subtitleSize}px)`,
-                  maxHeight: "4.8em",
-                  overflow: "hidden",
-                  WebkitBoxOrient: "vertical",
-                  WebkitLineClamp: 2,
-                }}
-              >
-                {activeSubtitle?.sinhala ? (
-                  activeSubtitle.sinhala
-                ) : subtitlesStillLoading ? (
-                  <span className="inline-flex items-center justify-center gap-2">
-                    <Loader2Icon className="size-4 shrink-0 animate-spin" />
-                    Sinhala subtitles are loading...
-                  </span>
-                ) : (
-                  "Subtitles will appear when the video reaches a translated line."
-                )}
-              </div>
+            {subtitleEnabled && subtitlePlacement === "overlay" ? (
+              <SubtitleCaption
+                activeSubtitle={activeSubtitle}
+                subtitleOpacity={subtitleOpacity}
+                subtitleSize={subtitleSize}
+                subtitlesStillLoading={subtitlesStillLoading}
+                variant="overlay"
+              />
             ) : null}
             {!youtubeVideoId ? (
               <div className="absolute inset-x-4 bottom-4 flex items-center gap-3 text-white">
@@ -1476,6 +1513,15 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             ) : null}
           </div>
         </StickerCard>
+        {subtitleEnabled && subtitlePlacement === "below" ? (
+          <SubtitleCaption
+            activeSubtitle={activeSubtitle}
+            subtitleOpacity={subtitleOpacity}
+            subtitleSize={subtitleSize}
+            subtitlesStillLoading={subtitlesStillLoading}
+            variant="below"
+          />
+        ) : null}
         <div className="grid gap-4 xl:hidden">
           <TranscriptPanel
             activeSegmentId={activeSubtitle?.id ?? null}
@@ -2074,9 +2120,11 @@ function VideoInfoPanel({ video }: { video: LibraryVideo }) {
 
 function SettingsScreen() {
   const subtitleEnabled = useAppStore((state) => state.subtitleEnabled);
+  const subtitlePlacement = useAppStore((state) => state.subtitlePlacement);
   const subtitleSize = useAppStore((state) => state.subtitleSize);
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
   const setSubtitleEnabled = useAppStore((state) => state.setSubtitleEnabled);
+  const setSubtitlePlacement = useAppStore((state) => state.setSubtitlePlacement);
   const setSubtitleSize = useAppStore((state) => state.setSubtitleSize);
   const setSubtitleOpacity = useAppStore((state) => state.setSubtitleOpacity);
 
@@ -2097,6 +2145,36 @@ function SettingsScreen() {
               onCheckedChange={setSubtitleEnabled}
             />
           </Field>
+          <FieldSet>
+            <FieldTitle>Subtitle placement</FieldTitle>
+            <FieldDescription>
+              Keep captions below the video on mobile, or overlay them on the
+              player when you want a theater-style view.
+            </FieldDescription>
+            <ToggleGroup
+              className="justify-start"
+              onValueChange={(value) => {
+                if (value === "overlay" || value === "below") {
+                  setSubtitlePlacement(value);
+                }
+              }}
+              type="single"
+              value={subtitlePlacement}
+            >
+              <ToggleGroupItem
+                className="rounded-md border-2 border-foreground bg-card data-[state=on]:bg-vidura-mint"
+                value="below"
+              >
+                Below video
+              </ToggleGroupItem>
+              <ToggleGroupItem
+                className="rounded-md border-2 border-foreground bg-card data-[state=on]:bg-vidura-mint"
+                value="overlay"
+              >
+                Overlay on video
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </FieldSet>
           <Field>
             <FieldLabel>Language</FieldLabel>
             <Select defaultValue="si">
