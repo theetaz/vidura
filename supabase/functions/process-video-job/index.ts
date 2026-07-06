@@ -1104,7 +1104,9 @@ function buildTranslationSystemPrompt(
   return [
     "You localize educational YouTube subtitles into natural spoken Sinhala (සිංහල).",
     "You have already read the ENTIRE transcript of this video. Never translate lines in isolation.",
-    "Each subtitle must read like continuous native Sinhala narration that fits the video topic, tone, and teaching style.",
+    "Work passage by passage: first understand what the speaker is saying across the whole stretch of segments, compose it as natural spoken Sinhala, then distribute that Sinhala across the segment indices in speaking order.",
+    "A single sentence often spans several consecutive segments. Let the Sinhala sentence flow across those indices — do NOT restart sentence grammar at every index, and do NOT force each index to be a self-contained sentence.",
+    "Each subtitle must read like continuous native Sinhala narration that fits the video topic, tone, and teaching style, and must connect smoothly to the previous and next subtitle.",
     "Avoid word-for-word English calques, awkward sentence order, and unnecessary transliteration.",
     "Prefer idiomatic Sinhala phrasing that a native speaker would use while explaining the same idea on video.",
     "",
@@ -1337,32 +1339,10 @@ async function buildTranslationContext(input: {
   return context;
 }
 
-function buildLocalTranscriptWindow(
-  allSegments: NormalizedTranscriptSegment[],
-  batchSegments: NormalizedTranscriptSegment[],
-  radius = 8,
-) {
-  if (batchSegments.length === 0) {
-    return [];
-  }
-
-  const minIndex = Math.min(...batchSegments.map((segment) => segment.index));
-  const maxIndex = Math.max(...batchSegments.map((segment) => segment.index));
-
-  return allSegments
-    .filter((segment) =>
-      segment.index >= minIndex - radius && segment.index <= maxIndex + radius
-    )
-    .map((segment) => ({
-      index: segment.index,
-      text: segment.text,
-    }));
-}
-
 function buildPriorTranslations(
   batchSegments: NormalizedTranscriptSegment[],
   existingTranslations: Map<number, string>,
-  limit = 12,
+  limit = 250,
 ) {
   const firstIndex = batchSegments[0]?.index ?? 0;
 
@@ -1391,7 +1371,9 @@ async function translateBatches(input: {
   totalSegments: number;
   initialTranslatedSegments: number;
 }) {
-  const batches = chunkSegments(input.segments, 12).map((segments, index) => ({
+  // Translate the whole invocation slice in one call so the model composes
+  // long continuous Sinhala passages instead of 12-line snippets.
+  const batches = chunkSegments(input.segments, 100).map((segments, index) => ({
     index,
     segments,
   }));
@@ -1434,10 +1416,6 @@ async function translateBatches(input: {
       priorTranslations: buildPriorTranslations(
         batch.segments,
         translationsByIndex,
-      ),
-      localTranscriptWindow: buildLocalTranscriptWindow(
-        input.allSegments,
-        batch.segments,
       ),
     });
 
@@ -1488,7 +1466,6 @@ async function translateSegmentBatch(input: {
   videoTitle: string | null;
   channelTitle: string | null;
   priorTranslations: Array<{ index: number; text: string }>;
-  localTranscriptWindow: Array<{ index: number; text: string }>;
 }) {
   const parsed = await requestOpenRouterJson<Record<string, unknown>>({
     apiKey: input.apiKey,
@@ -1503,7 +1480,6 @@ async function translateSegmentBatch(input: {
       videoTitle: input.videoTitle,
       channelTitle: input.channelTitle,
       videoContext: input.translationContext,
-      nearbyTranscript: input.localTranscriptWindow,
       priorSinhalaTranslations: input.priorTranslations,
       segmentsToTranslate: input.segments.map((segment) => ({
         index: segment.index,
@@ -1512,7 +1488,7 @@ async function translateSegmentBatch(input: {
         text: segment.text,
       })),
       instructions:
-        'Using the full transcript already provided in the system message, translate ONLY segmentsToTranslate. Write composed native Sinhala that flows naturally with priorSinhalaTranslations and nearbyTranscript. Do not mirror English grammar. Rephrase freely when needed so the line sounds spoken and relevant to the video. Keep each line short enough for on-screen subtitles. Return one JSON object shaped as {"translations":[{"index":0,"text":"..."}]} and no other keys.',
+        'Using the full transcript already provided in the system message, translate ONLY segmentsToTranslate, covering every requested index exactly once. First compose the passage as natural spoken Sinhala, then distribute it across the indices in speaking order — a sentence may flow across consecutive indices, so do not restart grammar at each index. The first line must continue naturally from the last entry of priorSinhalaTranslations. Do not mirror English grammar. Rephrase freely when needed so each line sounds spoken and relevant to the video. Keep each line short enough for on-screen subtitles. Return one JSON object shaped as {"translations":[{"index":0,"text":"..."}]} and no other keys.',
     },
     temperature: 0.4,
   });
@@ -1534,7 +1510,6 @@ async function translateCompleteBatch(input: {
   videoTitle: string | null;
   channelTitle: string | null;
   priorTranslations: Array<{ index: number; text: string }>;
-  localTranscriptWindow: Array<{ index: number; text: string }>;
 }) {
   const translations = await translateSegmentBatch(input);
   const translationByIndex = new Map(
@@ -1544,7 +1519,7 @@ async function translateCompleteBatch(input: {
     !translationByIndex.has(segment.index)
   );
 
-  for (const retryBatch of chunkSegments(missingSegments, 8)) {
+  for (const retryBatch of chunkSegments(missingSegments, 25)) {
     const retryTranslations = await translateSegmentBatch({
       ...input,
       segments: retryBatch,
