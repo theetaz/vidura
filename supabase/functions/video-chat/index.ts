@@ -1,9 +1,17 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { agents, type AgentConfig } from "./agents.ts";
+
+declare const EdgeRuntime: {
+  waitUntil: (promise: Promise<unknown>) => void;
+};
 
 type VideoChatBody = {
   question?: string;
   videoId?: string | null;
+  // Continue an existing session; omitted = new session (library) or the
+  // video's single thread (video chat).
+  threadId?: string | null;
 };
 
 type SegmentContext = {
@@ -43,7 +51,7 @@ const openRouterUrl = "https://openrouter.ai/api/v1/chat/completions";
 // generous while still guaranteeing the function never hits the runtime's
 // silent wall-clock kill.
 const OPENROUTER_TIMEOUT_MS = 90_000;
-const MAX_HISTORY_MESSAGES = 12;
+const TITLE_TIMEOUT_MS = 20_000;
 const MAX_MATCHED_SEGMENTS = 60;
 
 Deno.serve(async (request) => {
@@ -101,9 +109,25 @@ Deno.serve(async (request) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const videoId = body?.videoId ?? null;
+  let videoId = body?.videoId ?? null;
+  let threadId = body?.threadId ?? null;
+  let isNewThread = false;
 
-  if (videoId) {
+  if (threadId) {
+    // Continuing a saved session: derive the video scope from the thread.
+    const { data: thread } = await serviceClient
+      .from("chat_threads")
+      .select("id, video_id")
+      .eq("id", threadId)
+      .eq("owner_id", user.id)
+      .maybeSingle();
+
+    if (!thread) {
+      return jsonResponse({ error: "Chat session not found" }, 404);
+    }
+
+    videoId = (thread as { video_id: string | null }).video_id;
+  } else if (videoId) {
     const { data: video } = await serviceClient
       .from("videos")
       .select("id")
@@ -116,10 +140,25 @@ Deno.serve(async (request) => {
     }
   }
 
-  try {
-    const threadId = await ensureThread(serviceClient, user.id, videoId);
+  const agent: AgentConfig = videoId ? agents.video : agents.library;
 
-    const history = await fetchRecentMessages(serviceClient, threadId);
+  try {
+    if (!threadId) {
+      if (videoId) {
+        threadId = await ensureThread(serviceClient, user.id, videoId);
+      } else {
+        // Every fresh visit to the library chat starts a new session; it is
+        // auto-titled after the first exchange.
+        threadId = await createThread(serviceClient, user.id, null);
+        isNewThread = true;
+      }
+    }
+
+    const history = await fetchRecentMessages(
+      serviceClient,
+      threadId,
+      agent.maxHistoryMessages,
+    );
 
     await serviceClient.from("chat_messages").insert({
       thread_id: threadId,
@@ -132,6 +171,7 @@ Deno.serve(async (request) => {
     const context = videoId
       ? await buildVideoContext(serviceClient, user.id, videoId)
       : await buildLibraryContext(serviceClient, user.id, question);
+    const systemPrompt = `${agent.instructions}\n\n${context.contextBlock}`;
 
     const upstream = await fetch(openRouterUrl, {
       method: "POST",
@@ -144,9 +184,9 @@ Deno.serve(async (request) => {
       body: JSON.stringify({
         model: openRouterModel,
         stream: true,
-        temperature: 0.3,
+        temperature: agent.temperature,
         messages: [
-          { role: "system", content: context.systemPrompt },
+          { role: "system", content: systemPrompt },
           ...history,
           { role: "user", content: question },
         ],
@@ -203,7 +243,25 @@ Deno.serve(async (request) => {
             .select("id")
             .single();
 
-          send({ type: "done", messageId: saved?.id ?? null });
+          if (isNewThread) {
+            EdgeRuntime.waitUntil(
+              generateThreadTitle({
+                serviceClient,
+                threadId: threadId!,
+                apiKey: openRouterApiKey,
+                model: openRouterModel,
+                titleInstructions: agent.titleInstructions,
+                question,
+                answer: trimmedAnswer,
+              }),
+            );
+          }
+
+          send({
+            type: "done",
+            messageId: saved?.id ?? null,
+            threadId,
+          });
         } catch (streamError) {
           const message = streamError instanceof Error
             ? streamError.message
@@ -304,12 +362,20 @@ async function ensureThread(
     return existing.id;
   }
 
+  return createThread(serviceClient, ownerId, videoId);
+}
+
+async function createThread(
+  serviceClient: SupabaseClient,
+  ownerId: string,
+  videoId: string | null,
+) {
   const { data: thread, error: insertError } = await serviceClient
     .from("chat_threads")
     .insert({
       owner_id: ownerId,
       video_id: videoId,
-      title: videoId ? "Video chat" : "Library chat",
+      title: videoId ? "Video chat" : null,
     })
     .select("id")
     .single();
@@ -321,9 +387,68 @@ async function ensureThread(
   return (thread as { id: string }).id;
 }
 
+// Auto-name a fresh session from its first exchange, in the conversation's
+// own language. Best-effort: a failure just leaves the default title.
+async function generateThreadTitle(input: {
+  serviceClient: SupabaseClient;
+  threadId: string;
+  apiKey: string;
+  model: string;
+  titleInstructions: string;
+  question: string;
+  answer: string;
+}) {
+  try {
+    const response = await fetch(openRouterUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${input.apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://vidura.local",
+        "X-Title": "Vidura",
+      },
+      body: JSON.stringify({
+        model: input.model,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: input.titleInstructions },
+          {
+            role: "user",
+            content:
+              `First user message:\n${input.question.slice(0, 500)}\n\n` +
+              `Assistant answer:\n${input.answer.slice(0, 500)}`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(TITLE_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      return;
+    }
+
+    const completion = await response.json();
+    const title = String(completion?.choices?.[0]?.message?.content ?? "")
+      .replaceAll('"', "")
+      .replaceAll("*", "")
+      .trim()
+      .slice(0, 80);
+
+    if (title) {
+      await input.serviceClient
+        .from("chat_threads")
+        .update({ title })
+        .eq("id", input.threadId);
+    }
+  } catch (error) {
+    console.warn("Thread title generation failed", error);
+  }
+}
+
 async function fetchRecentMessages(
   serviceClient: SupabaseClient,
   threadId: string,
+  limit: number,
 ) {
   const { data } = await serviceClient
     .from("chat_messages")
@@ -331,21 +456,12 @@ async function fetchRecentMessages(
     .eq("thread_id", threadId)
     .neq("role", "system")
     .order("created_at", { ascending: false })
-    .limit(MAX_HISTORY_MESSAGES);
+    .limit(limit);
 
   return ((data ?? []) as Array<{ role: "user" | "assistant"; content: string }>)
     .reverse()
     .map((message) => ({ role: message.role, content: message.content }));
 }
-
-const sharedGuidance = [
-  "You are Vidura, a friendly study assistant for a personal library of YouTube videos with Sinhala subtitles.",
-  "Answer ONLY from the provided context (transcripts, notes, video catalog). If the answer is not in the context, say so honestly.",
-  "Detect the user's language and reply in it: English questions get English answers; Sinhala script gets Sinhala; Singlish (Sinhala written in Latin letters) gets simple Singlish or Sinhala.",
-  "Always cite where in the video your answer comes from using [mm:ss] timestamps taken from the context.",
-  "Keep answers concise and conversational. Use short paragraphs or simple '-' bullet lines.",
-  "Write plain text only — no markdown formatting such as **bold**, headers, or numbered syntax.",
-].join("\n");
 
 async function buildVideoContext(
   serviceClient: SupabaseClient,
@@ -407,9 +523,7 @@ async function buildVideoContext(
       .join("\n")
     : "No notes yet.";
 
-  const systemPrompt = [
-    sharedGuidance,
-    "",
+  const contextBlock = [
     `Current video: ${video?.title ?? "Unknown"} — ${
       video?.channel_title ?? "YouTube"
     }`,
@@ -421,7 +535,7 @@ async function buildVideoContext(
     notesBlock,
   ].join("\n");
 
-  return { systemPrompt, videoIds: [videoId] };
+  return { contextBlock, videoIds: [videoId] };
 }
 
 async function buildLibraryContext(
@@ -549,10 +663,7 @@ async function buildLibraryContext(
       .join("\n")
     : "No notes yet.";
 
-  const systemPrompt = [
-    sharedGuidance,
-    "When you reference a video, name it and give the timestamp like: \"Video Title\" [mm:ss].",
-    "",
+  const contextBlock = [
     "The user's video library:",
     catalogBlock,
     "",
@@ -563,7 +674,7 @@ async function buildLibraryContext(
     notesBlock,
   ].join("\n");
 
-  return { systemPrompt, videoIds };
+  return { contextBlock, videoIds };
 }
 
 function extractSearchTerms(question: string) {
