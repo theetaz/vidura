@@ -40,6 +40,10 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://vidura:${POSTGRES_PASSWORD}@postgres:5432/vidura
+      # Drop a Netscape-format cookies.txt here to bypass YouTube's bot wall.
+      YOUTUBE_COOKIES_FILE: /cookies/youtube.txt
+    volumes:
+      - ./cookies:/cookies:ro
     depends_on:
       postgres:
         condition: service_healthy

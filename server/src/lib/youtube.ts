@@ -1,17 +1,14 @@
-// YouTube URL parsing, metadata, and transcript extraction — ported from the
-// Supabase edge functions. Runs on Bun/Node with global fetch.
+// YouTube URL parsing, metadata, and transcript extraction.
+//
+// Transcript/metadata extraction uses yt-dlp (bundled in the container), which
+// rotates player clients to get past YouTube's datacenter-IP bot wall — the
+// hand-rolled innertube approach couldn't. An optional proxy is still honored.
 
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { env } from "../env.ts";
-
-// All YouTube requests go through this so an optional residential proxy can be
-// applied (YouTube blocks datacenter IPs). Bun's fetch supports a `proxy`
-// option; when unset the request is direct.
-function ytFetch(url: string, init?: RequestInit): Promise<Response> {
-  const withProxy = env.youtubeProxyUrl
-    ? { ...init, proxy: env.youtubeProxyUrl }
-    : init;
-  return fetch(url, withProxy as RequestInit);
-}
 
 export type ParsedYouTubeUrl = {
   videoId: string;
@@ -32,20 +29,13 @@ export type VideoMetadata = {
   thumbnailUrl: string | null;
 };
 
-type TranscriptLine = {
-  text: string;
-  duration: number;
-  offset: number;
-  lang: string;
-};
-
-type CaptionTrack = {
-  baseUrl?: string;
-  languageCode?: string;
-  kind?: string;
+export type YouTubeVideoData = {
+  metadata: VideoMetadata;
+  segments: NormalizedTranscriptSegment[];
 };
 
 const youtubeIdPattern = /^[a-zA-Z0-9_-]{11}$/;
+const YTDLP_TIMEOUT_MS = 90_000;
 
 export function parseYouTubeUrl(value: string): ParsedYouTubeUrl | null {
   const input = value.trim();
@@ -86,259 +76,192 @@ function parseVideoIdFromPath(pathname: string, routeNames: string[]) {
   return id ?? null;
 }
 
-export async function fetchYouTubeMetadata(
-  videoId: string,
-): Promise<VideoMetadata> {
-  const fallback = {
+function fallbackMetadata(videoId: string): VideoMetadata {
+  return {
     title: null,
     channelTitle: null,
     durationMs: null,
     thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
   };
+}
 
-  const response = await ytFetch(`https://www.youtube.com/watch?v=${videoId}`, {
-    headers: {
-      "Accept-Language": "en-US,en;q=0.9",
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-    },
-  });
+// Runs yt-dlp once to obtain BOTH metadata and the English transcript, so a
+// single extraction covers the whole processing pipeline.
+export async function fetchYouTubeVideoData(
+  videoId: string,
+): Promise<YouTubeVideoData> {
+  const dir = await mkdtemp(join(tmpdir(), "vidura-yt-"));
 
-  if (!response.ok) return fallback;
+  try {
+    await runYtDlp([
+      "--skip-download",
+      "--write-subs",
+      "--write-auto-subs",
+      "--sub-langs",
+      "en.*,en,-live_chat",
+      "--sub-format",
+      "json3",
+      "--write-info-json",
+      "--no-warnings",
+      "--no-playlist",
+      "--retries",
+      "3",
+      "-o",
+      join(dir, "%(id)s"),
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ]);
 
-  const html = await response.text();
-  const playerResponse = parseInlineJson(html, "ytInitialPlayerResponse");
-  const videoDetails = playerResponse?.videoDetails as
-    | Record<string, unknown>
-    | undefined;
-  const thumbnails = ((videoDetails?.thumbnail as Record<string, unknown>)
-    ?.thumbnails ?? []) as Array<Record<string, unknown>>;
-  const bestThumbnail = thumbnails
-    .filter((thumbnail) => typeof thumbnail.url === "string")
-    .sort((a, b) => Number(b.width ?? 0) - Number(a.width ?? 0))[0];
-  const lengthSeconds = Number(videoDetails?.lengthSeconds);
+    const files = await readdir(dir);
+    const metadata = await readInfoJson(dir, files, videoId);
 
+    // Prefer a manual English track; fall back to any en*.json3, then any json3.
+    const subFile = files.find((f) => /\.en\.json3$/.test(f)) ??
+      files.find((f) => /\.en[.-][^.]*\.json3$/.test(f)) ??
+      files.find((f) => f.endsWith(".json3"));
+
+    if (!subFile) {
+      throw new Error(
+        `Couldn't fetch a transcript for ${videoId} — no English captions are available for this video.`,
+      );
+    }
+
+    const segments = parseJson3(await readFile(join(dir, subFile), "utf8"));
+    if (segments.length === 0) {
+      throw new Error(
+        `Couldn't parse any transcript lines for ${videoId}.`,
+      );
+    }
+
+    return { metadata, segments };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Metadata only (used when the user uploaded their own transcript).
+export async function fetchYouTubeMetadata(
+  videoId: string,
+): Promise<VideoMetadata> {
+  try {
+    const { stdout } = await runYtDlp([
+      "--skip-download",
+      "--dump-single-json",
+      "--no-warnings",
+      "--no-playlist",
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ]);
+    return infoToMetadata(JSON.parse(stdout), videoId);
+  } catch {
+    return fallbackMetadata(videoId);
+  }
+}
+
+async function readInfoJson(
+  dir: string,
+  files: string[],
+  videoId: string,
+): Promise<VideoMetadata> {
+  const infoFile = files.find((f) => f.endsWith(".info.json"));
+  if (!infoFile) return fallbackMetadata(videoId);
+  try {
+    const info = JSON.parse(await readFile(join(dir, infoFile), "utf8"));
+    return infoToMetadata(info, videoId);
+  } catch {
+    return fallbackMetadata(videoId);
+  }
+}
+
+function infoToMetadata(info: any, videoId: string): VideoMetadata {
+  const fallback = fallbackMetadata(videoId);
   return {
-    title: typeof videoDetails?.title === "string" ? videoDetails.title : null,
-    channelTitle: typeof videoDetails?.author === "string"
-      ? videoDetails.author
+    title: typeof info?.title === "string" ? info.title : null,
+    channelTitle: typeof info?.uploader === "string"
+      ? info.uploader
+      : typeof info?.channel === "string"
+      ? info.channel
       : null,
-    durationMs: Number.isFinite(lengthSeconds) ? lengthSeconds * 1000 : null,
-    thumbnailUrl: typeof bestThumbnail?.url === "string"
-      ? bestThumbnail.url
+    durationMs: typeof info?.duration === "number"
+      ? Math.round(info.duration * 1000)
+      : null,
+    thumbnailUrl: typeof info?.thumbnail === "string"
+      ? info.thumbnail
       : fallback.thumbnailUrl,
   };
 }
 
-export async function fetchYouTubeTranscriptSegments(
-  videoId: string,
-): Promise<NormalizedTranscriptSegment[]> {
-  const transcript = await fetchTranscriptLines(videoId);
+// Parses YouTube's json3 caption format into normalized segments.
+function parseJson3(raw: string): NormalizedTranscriptSegment[] {
+  const data = JSON.parse(raw);
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const out: NormalizedTranscriptSegment[] = [];
+  let lastText = "";
 
-  return transcript
-    .map((segment, index) => {
-      const startMs = normalizeTranscriptTime(segment.offset);
-      const durationMs = normalizeTranscriptDuration(segment.duration);
-      return {
-        index,
-        startMs,
-        endMs: Math.max(startMs + 1, startMs + durationMs),
-        text: segment.text.replace(/\s+/g, " ").trim(),
-      };
-    })
-    .filter((segment) => segment.text && segment.endMs > segment.startMs)
-    .slice(0, 500);
-}
+  for (const event of events) {
+    if (!Array.isArray(event?.segs)) continue;
 
-async function fetchTranscriptLines(videoId: string): Promise<TranscriptLine[]> {
-  const tracks = await fetchCaptionTracks(videoId);
-  const track = chooseCaptionTrack(tracks, "en");
+    const text = event.segs
+      .map((seg: any) => (typeof seg?.utf8 === "string" ? seg.utf8 : ""))
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
 
-  if (!track?.baseUrl) {
-    // No caption tracks usually means YouTube blocked this (datacenter) IP
-    // rather than the video genuinely lacking captions.
-    throw new Error(
-      `Couldn't fetch a transcript for ${videoId} — YouTube returned no caption tracks (the server IP may be blocked). Import a transcript file instead, or configure YOUTUBE_PROXY_URL.`,
-    );
-  }
+    // Skip empties and consecutive duplicates (auto-caption rolling lines).
+    if (!text || text === lastText) continue;
+    lastText = text;
 
-  const transcriptXml = await fetchCaptionXml(track.baseUrl);
-  const transcript = parseTranscriptXml(transcriptXml, track.languageCode ?? "en");
+    const startMs = Math.max(0, Math.floor(Number(event.tStartMs) || 0));
+    const durMs = Math.max(1, Math.floor(Number(event.dDurationMs) || 4500));
 
-  if (transcript.length === 0) {
-    throw new Error(`No transcript lines were parsed for ${videoId}`);
-  }
-
-  return transcript;
-}
-
-async function fetchCaptionTracks(videoId: string): Promise<CaptionTrack[]> {
-  const innerTubeResponse = await ytFetch(
-    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "User-Agent":
-          "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
-      },
-      body: JSON.stringify({
-        context: { client: { clientName: "ANDROID", clientVersion: "20.10.38" } },
-        videoId,
-      }),
-    },
-  );
-
-  if (innerTubeResponse.ok) {
-    const payload = await innerTubeResponse.json() as any;
-    const tracks = payload?.captions?.playerCaptionsTracklistRenderer
-      ?.captionTracks;
-    if (Array.isArray(tracks) && tracks.length > 0) return tracks;
-  }
-
-  const webResponse = await ytFetch(`https://www.youtube.com/watch?v=${videoId}`, {
-    headers: {
-      "Accept-Language": "en-US,en;q=0.9",
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-    },
-  });
-  const html = await webResponse.text();
-  const playerResponse = parseInlineJson(html, "ytInitialPlayerResponse");
-  const tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer
-    ?.captionTracks;
-
-  return Array.isArray(tracks) ? tracks : [];
-}
-
-function chooseCaptionTrack(tracks: CaptionTrack[], preferredLanguage: string) {
-  const preferredTracks = tracks.filter((track) =>
-    track.languageCode === preferredLanguage
-  );
-
-  return (
-    preferredTracks.find((track) => track.kind !== "asr") ??
-      preferredTracks[0] ??
-      tracks.find((track) => track.kind !== "asr") ??
-      tracks[0] ??
-      null
-  );
-}
-
-async function fetchCaptionXml(baseUrl: string) {
-  const response = await ytFetch(baseUrl, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`YouTube transcript request failed with ${response.status}`);
-  }
-
-  const body = await response.text();
-  if (!body.trim()) {
-    throw new Error("YouTube transcript response was empty");
-  }
-
-  return body;
-}
-
-function parseTranscriptXml(xml: string, lang: string): TranscriptLine[] {
-  const paragraphMatches = xml.matchAll(
-    /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g,
-  );
-  const paragraphResults = Array.from(paragraphMatches).flatMap((match) => {
-    const startMs = Number(match[1]);
-    const durationMs = Number(match[2]);
-    const inner = match[3] ?? "";
-    const wordMatches = Array.from(inner.matchAll(/<s[^>]*>([^<]*)<\/s>/g));
-    const text = decodeEntities(
-      wordMatches.length > 0
-        ? wordMatches.map((wordMatch) => wordMatch[1]).join("")
-        : inner.replace(/<[^>]+>/g, ""),
-    ).trim();
-
-    if (!text || !Number.isFinite(startMs) || !Number.isFinite(durationMs)) {
-      return [];
-    }
-
-    return [{ text, duration: durationMs, offset: startMs, lang }];
-  });
-
-  if (paragraphResults.length > 0) return paragraphResults;
-
-  return Array.from(
-    xml.matchAll(/<text start="([^"]*)" dur="([^"]*)">([^<]*)<\/text>/g),
-  ).flatMap((match) => {
-    const offsetSeconds = Number(match[1]);
-    const durationSeconds = Number(match[2]);
-    const text = decodeEntities(match[3] ?? "").trim();
-
-    if (
-      !text || !Number.isFinite(offsetSeconds) ||
-      !Number.isFinite(durationSeconds)
-    ) {
-      return [];
-    }
-
-    return [{
+    out.push({
+      index: out.length,
+      startMs,
+      endMs: startMs + durMs,
       text,
-      duration: durationSeconds * 1000,
-      offset: offsetSeconds * 1000,
-      lang,
-    }];
-  });
-}
-
-function parseInlineJson(html: string, globalName: string) {
-  const assignmentMatch = html.match(
-    new RegExp(`(?:var\\s+)?${globalName}\\s*=\\s*\\{`),
-  );
-  if (!assignmentMatch || assignmentMatch.index === undefined) return null;
-
-  const jsonStart = html.indexOf("{", assignmentMatch.index);
-  let depth = 0;
-
-  for (let index = jsonStart; index < html.length; index += 1) {
-    if (html[index] === "{") {
-      depth += 1;
-    } else if (html[index] === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        try {
-          return JSON.parse(html.slice(jsonStart, index + 1));
-        } catch {
-          return null;
-        }
-      }
-    }
+    });
   }
 
-  return null;
+  return out.slice(0, 500);
 }
 
-function decodeEntities(text: string) {
-  return text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex: string) =>
-      String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec: string) =>
-      String.fromCodePoint(parseInt(dec, 10)));
-}
+async function runYtDlp(
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
+  const fullArgs = [...args];
+  // Cookies from a logged-in session bypass YouTube's bot wall on flagged IPs.
+  if (env.youtubeCookiesFile && existsSync(env.youtubeCookiesFile)) {
+    fullArgs.unshift("--cookies", env.youtubeCookiesFile);
+  }
+  if (env.youtubeProxyUrl) {
+    fullArgs.unshift("--proxy", env.youtubeProxyUrl);
+  }
 
-function normalizeTranscriptTime(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.floor(value <= 120 ? value * 1000 : value));
-}
+  const proc = Bun.spawn(["yt-dlp", ...fullArgs], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
-function normalizeTranscriptDuration(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return 4500;
-  return Math.max(1, Math.floor(value <= 120 ? value * 1000 : value));
+  const timer = setTimeout(() => {
+    try {
+      proc.kill();
+    } catch {
+      // already exited
+    }
+  }, YTDLP_TIMEOUT_MS);
+
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    if (exitCode !== 0) {
+      const detail = stderr.split("\n").filter(Boolean).slice(-2).join(" ");
+      throw new Error(`yt-dlp failed (${exitCode}): ${detail.slice(0, 300)}`);
+    }
+
+    return { stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
 }

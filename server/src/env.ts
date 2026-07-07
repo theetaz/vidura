@@ -28,6 +28,10 @@ export const env = {
   // IPs ("Sign in to confirm you're not a bot"); routing through a residential
   // proxy makes server-side transcript fetching work. Empty = direct.
   youtubeProxyUrl: optional("YOUTUBE_PROXY_URL"),
+  // Optional Netscape-format cookies file (path inside the container). Cookies
+  // from a logged-in YouTube session let yt-dlp bypass the bot wall on a
+  // flagged datacenter IP. Used only when the file exists.
+  youtubeCookiesFile: optional("YOUTUBE_COOKIES_FILE"),
   // Email/password is a local-testing convenience; production uses Google only.
   emailPasswordAuth: optional("AUTH_EMAIL_PASSWORD", "false") === "true",
   get googleEnabled() {

@@ -2,7 +2,7 @@ import { sql } from "../db.ts";
 import { env } from "../env.ts";
 import {
   fetchYouTubeMetadata,
-  fetchYouTubeTranscriptSegments,
+  fetchYouTubeVideoData,
   type NormalizedTranscriptSegment,
 } from "../lib/youtube.ts";
 import {
@@ -67,7 +67,15 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         metadata: { stage: "fetching_metadata", translated_segments: 0 },
       });
 
-      const metadata = await fetchYouTubeMetadata(video.youtube_video_id);
+      const uploaded = normalizeSegments(data.segments);
+      // One yt-dlp call fetches both metadata and the transcript. When the
+      // user uploaded their own transcript, only metadata is needed.
+      const ytData = uploaded.length > 0
+        ? null
+        : await fetchYouTubeVideoData(video.youtube_video_id);
+      const metadata = ytData?.metadata ??
+        await fetchYouTubeMetadata(video.youtube_video_id);
+
       await sql`
         update videos set
           thumbnail_url = coalesce(${metadata.thumbnailUrl},
@@ -82,10 +90,9 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         where id = ${videoId}
       `;
 
-      const uploaded = normalizeSegments(data.segments);
       transcriptSegments = uploaded.length > 0
         ? uploaded
-        : await fetchYouTubeTranscriptSegments(video.youtube_video_id);
+        : ytData!.segments;
 
       if (transcriptSegments.length === 0) {
         throw new Error("No transcript segments were available for this video");
