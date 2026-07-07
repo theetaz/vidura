@@ -1,6 +1,11 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { agents, type AgentConfig } from "./agents.ts";
+import {
+  type ChatSettings,
+  defaultChatSettings,
+  resolveAgent,
+  type ResolvedAgent,
+} from "./agents.ts";
 
 declare const EdgeRuntime: {
   waitUntil: (promise: Promise<unknown>) => void;
@@ -52,7 +57,6 @@ const openRouterUrl = "https://openrouter.ai/api/v1/chat/completions";
 // silent wall-clock kill.
 const OPENROUTER_TIMEOUT_MS = 90_000;
 const TITLE_TIMEOUT_MS = 20_000;
-const MAX_MATCHED_SEGMENTS = 60;
 
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") {
@@ -140,7 +144,11 @@ Deno.serve(async (request) => {
     }
   }
 
-  const agent: AgentConfig = videoId ? agents.video : agents.library;
+  const settings = await fetchChatSettings(serviceClient, user.id);
+  const agent: ResolvedAgent = resolveAgent(
+    videoId ? "video" : "library",
+    settings,
+  );
 
   try {
     if (!threadId) {
@@ -170,7 +178,12 @@ Deno.serve(async (request) => {
 
     const context = videoId
       ? await buildVideoContext(serviceClient, user.id, videoId)
-      : await buildLibraryContext(serviceClient, user.id, question);
+      : await buildLibraryContext(
+        serviceClient,
+        user.id,
+        question,
+        agent.maxMatchedSegments,
+      );
     const systemPrompt = `${agent.instructions}\n\n${context.contextBlock}`;
 
     const upstream = await fetch(openRouterUrl, {
@@ -463,6 +476,41 @@ async function fetchRecentMessages(
     .map((message) => ({ role: message.role, content: message.content }));
 }
 
+async function fetchChatSettings(
+  serviceClient: SupabaseClient,
+  ownerId: string,
+): Promise<ChatSettings> {
+  const { data } = await serviceClient
+    .from("user_chat_settings")
+    .select(
+      "response_language, answer_style, custom_instructions, memory_depth, retrieval_depth, creativity",
+    )
+    .eq("owner_id", ownerId)
+    .maybeSingle();
+
+  if (!data) {
+    return defaultChatSettings;
+  }
+
+  const row = data as {
+    response_language: ChatSettings["responseLanguage"];
+    answer_style: ChatSettings["answerStyle"];
+    custom_instructions: string | null;
+    memory_depth: ChatSettings["memoryDepth"];
+    retrieval_depth: ChatSettings["retrievalDepth"];
+    creativity: ChatSettings["creativity"];
+  };
+
+  return {
+    responseLanguage: row.response_language,
+    answerStyle: row.answer_style,
+    customInstructions: row.custom_instructions ?? "",
+    memoryDepth: row.memory_depth,
+    retrievalDepth: row.retrieval_depth,
+    creativity: row.creativity,
+  };
+}
+
 async function buildVideoContext(
   serviceClient: SupabaseClient,
   ownerId: string,
@@ -542,6 +590,7 @@ async function buildLibraryContext(
   serviceClient: SupabaseClient,
   ownerId: string,
   question: string,
+  maxMatchedSegments: number,
 ) {
   const { data: videoRows } = await serviceClient
     .from("videos")
@@ -601,7 +650,7 @@ async function buildLibraryContext(
       .in("video_id", videoIds)
       .or(orFilter)
       .order("start_ms", { ascending: true })
-      .limit(MAX_MATCHED_SEGMENTS);
+      .limit(maxMatchedSegments);
 
     for (
       const row of (segmentRows ?? []) as Array<
