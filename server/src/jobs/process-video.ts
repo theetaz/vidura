@@ -1,0 +1,358 @@
+import { sql } from "../db.ts";
+import { env } from "../env.ts";
+import {
+  fetchYouTubeMetadata,
+  fetchYouTubeTranscriptSegments,
+  type NormalizedTranscriptSegment,
+} from "../lib/youtube.ts";
+import {
+  buildPriorTranslations,
+  buildTranslationContext,
+  chunkSegments,
+  parseTranslationContext,
+  translateCompleteBatch,
+  TRANSLATION_BATCH_SIZE,
+  type TranslationContext,
+} from "../lib/translation.ts";
+import type { ProcessVideoJobData } from "./boss.ts";
+
+type StoredSegment = {
+  id: string;
+  segment_index: number;
+  start_ms: number;
+  end_ms: number;
+  text: string;
+};
+
+type JobState = {
+  jobStatus: "running" | "ready" | "failed";
+  videoStatus: "fetching_transcript" | "translating" | "ready" | "failed";
+  progress: number;
+  errorMessage?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+// Runs the full transcript + translation pipeline. Unlike the edge function
+// this has no wall-clock kill limit, so it simply runs to completion.
+export async function runProcessVideoJob(data: ProcessVideoJobData) {
+  const jobId = data.jobId;
+  const videoId = data.videoId;
+
+  try {
+    const [video] = await sql<
+      Array<{ youtube_video_id: string; title: string; channel_title: string | null }>
+    >`
+      select youtube_video_id, title, channel_title from videos where id = ${videoId}
+    `;
+    if (!video) throw new Error("Video for processing job was not found");
+
+    if (data.forceRefetchTranscript) {
+      await updateJob(jobId, videoId, {
+        jobStatus: "running",
+        videoStatus: "fetching_transcript",
+        progress: 2,
+        metadata: { stage: "clearing_transcript", translated_segments: 0 },
+      });
+      await sql`delete from transcript_segments where video_id = ${videoId}`;
+    }
+
+    let stored = await fetchStoredSegments(videoId);
+    let transcriptSegments = stored.map(toNormalized);
+
+    if (transcriptSegments.length === 0) {
+      await updateJob(jobId, videoId, {
+        jobStatus: "running",
+        videoStatus: "fetching_transcript",
+        progress: 5,
+        metadata: { stage: "fetching_metadata", translated_segments: 0 },
+      });
+
+      const metadata = await fetchYouTubeMetadata(video.youtube_video_id);
+      await sql`
+        update videos set
+          thumbnail_url = coalesce(${metadata.thumbnailUrl},
+            ${"https://i.ytimg.com/vi/" + video.youtube_video_id + "/hqdefault.jpg"}),
+          title = coalesce(${metadata.title}, title),
+          channel_title = coalesce(${metadata.channelTitle}, channel_title),
+          duration_ms = coalesce(${metadata.durationMs}, duration_ms),
+          source_language = ${data.sourceLanguage},
+          metadata = metadata || ${sql.json({
+        youtube_metadata_fetched_at: new Date().toISOString(),
+      })}
+        where id = ${videoId}
+      `;
+
+      const uploaded = normalizeSegments(data.segments);
+      transcriptSegments = uploaded.length > 0
+        ? uploaded
+        : await fetchYouTubeTranscriptSegments(video.youtube_video_id);
+
+      if (transcriptSegments.length === 0) {
+        throw new Error("No transcript segments were available for this video");
+      }
+
+      await updateJob(jobId, videoId, {
+        jobStatus: "running",
+        videoStatus: "fetching_transcript",
+        progress: 20,
+        metadata: {
+          stage: "storing_transcript",
+          total_segments: transcriptSegments.length,
+          translated_segments: 0,
+          transcript_source: uploaded.length > 0 ? "uploaded" : "youtube",
+        },
+      });
+
+      stored = await storeTranscript(
+        videoId,
+        data.sourceLanguage,
+        transcriptSegments,
+      );
+    }
+
+    if (data.forceRetranslate) {
+      await sql`
+        delete from translated_segments
+        where video_id = ${videoId} and language_code = ${data.targetLanguage}
+      `;
+    }
+
+    const segmentIdByIndex = new Map(stored.map((s) => [s.segment_index, s.id]));
+    const existingTranslations = await fetchExistingTranslations(
+      videoId,
+      data.targetLanguage,
+    );
+    const untranslated = transcriptSegments.filter(
+      (segment) => !existingTranslations.has(segment.index),
+    );
+    let translatedCount = transcriptSegments.length - untranslated.length;
+
+    const [jobRow] = await sql<Array<{ metadata: Record<string, unknown> }>>`
+      select metadata from processing_jobs where id = ${jobId}
+    `;
+    const jobMetadata = jobRow?.metadata ?? {};
+    let context: TranslationContext | null = data.rebuildContext
+      ? null
+      : parseTranslationContext(jobMetadata.translation_context);
+
+    if (!context) {
+      await updateJob(jobId, videoId, {
+        jobStatus: "running",
+        videoStatus: "translating",
+        progress: translationProgress(translatedCount, transcriptSegments.length),
+        metadata: {
+          stage: "building_translation_context",
+          total_segments: transcriptSegments.length,
+          translated_segments: translatedCount,
+        },
+      });
+      context = await buildTranslationContext({
+        model: env.openRouterModel,
+        sourceLanguage: data.sourceLanguage,
+        targetLanguage: data.targetLanguage,
+        videoTitle: video.title,
+        channelTitle: video.channel_title,
+        segments: transcriptSegments,
+      });
+      await mergeJobMetadata(jobId, { translation_context: context });
+    }
+
+    const translationsByIndex = new Map(existingTranslations);
+    const batches = chunkSegments(untranslated, TRANSLATION_BATCH_SIZE);
+
+    for (const batch of batches) {
+      const current = batch[0];
+      await updateJob(jobId, videoId, {
+        jobStatus: "running",
+        videoStatus: "translating",
+        progress: translationProgress(translatedCount, transcriptSegments.length),
+        metadata: {
+          stage: "translating",
+          total_segments: transcriptSegments.length,
+          translated_segments: translatedCount,
+          remaining_segments: transcriptSegments.length - translatedCount,
+          current_segment_index: current?.index,
+          current_segment_start_ms: current?.startMs,
+          current_segment_text: current?.text,
+        },
+      });
+
+      const batchTranslations = await translateCompleteBatch({
+        model: env.openRouterModel,
+        sourceLanguage: data.sourceLanguage,
+        targetLanguage: data.targetLanguage,
+        segments: batch,
+        allSegments: transcriptSegments,
+        translationContext: context,
+        videoTitle: video.title,
+        channelTitle: video.channel_title,
+        priorTranslations: buildPriorTranslations(batch, translationsByIndex),
+      });
+
+      await storeTranslations(
+        videoId,
+        data.targetLanguage,
+        env.openRouterModel,
+        segmentIdByIndex,
+        batchTranslations,
+      );
+
+      for (const t of batchTranslations) translationsByIndex.set(t.index, t.text);
+      translatedCount += batchTranslations.length;
+    }
+
+    await updateJob(jobId, videoId, {
+      jobStatus: "ready",
+      videoStatus: "ready",
+      progress: 100,
+      metadata: {
+        stage: "ready",
+        total_segments: transcriptSegments.length,
+        translated_segments: translatedCount,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Processing failed";
+    await updateJob(jobId, videoId, {
+      jobStatus: "failed",
+      videoStatus: "failed",
+      progress: 100,
+      errorMessage: message,
+      metadata: { stage: "failed", error: message },
+    });
+    throw error;
+  }
+}
+
+async function updateJob(jobId: string, videoId: string, state: JobState) {
+  const now = new Date().toISOString();
+  const patch = state.metadata ?? {};
+
+  await sql`
+    update processing_jobs set
+      status = ${state.jobStatus},
+      progress = ${state.progress},
+      error_message = ${state.errorMessage ?? null},
+      metadata = metadata || ${sql.json(patch as never)},
+      started_at = case when ${state.jobStatus} = 'running' then coalesce(started_at, ${now}) else started_at end,
+      finished_at = case when ${state.jobStatus} <> 'running' then ${now} else finished_at end
+    where id = ${jobId}
+  `;
+  await sql`
+    update videos set status = ${state.videoStatus},
+      error_message = ${state.errorMessage ?? null}
+    where id = ${videoId}
+  `;
+}
+
+async function mergeJobMetadata(jobId: string, patch: Record<string, unknown>) {
+  await sql`
+    update processing_jobs set metadata = metadata || ${sql.json(patch as never)}
+    where id = ${jobId}
+  `;
+}
+
+async function fetchStoredSegments(videoId: string): Promise<StoredSegment[]> {
+  return await sql<StoredSegment[]>`
+    select id, segment_index, start_ms, end_ms, text
+    from transcript_segments where video_id = ${videoId}
+    order by segment_index asc
+  `;
+}
+
+function toNormalized(segment: StoredSegment): NormalizedTranscriptSegment {
+  return {
+    index: segment.segment_index,
+    startMs: segment.start_ms,
+    endMs: segment.end_ms,
+    text: segment.text,
+  };
+}
+
+function normalizeSegments(
+  segments: ProcessVideoJobData["segments"],
+): NormalizedTranscriptSegment[] {
+  return segments
+    .map((segment, index) => ({
+      index,
+      startMs: Math.max(0, Math.floor(segment.startMs ?? index * 5000)),
+      endMs: Math.max(1, Math.floor(segment.endMs ?? index * 5000 + 4500)),
+      text: segment.text?.trim() ?? "",
+    }))
+    .filter((segment) => segment.text && segment.endMs > segment.startMs)
+    .slice(0, 500);
+}
+
+async function storeTranscript(
+  videoId: string,
+  sourceLanguage: string,
+  segments: NormalizedTranscriptSegment[],
+): Promise<StoredSegment[]> {
+  const rows = segments.map((segment) => ({
+    video_id: videoId,
+    segment_index: segment.index,
+    start_ms: segment.startMs,
+    end_ms: segment.endMs,
+    source_language: sourceLanguage,
+    text: segment.text,
+    normalized_text: segment.text.toLowerCase(),
+  }));
+
+  await sql`
+    insert into transcript_segments ${sql(rows)}
+    on conflict (video_id, segment_index) do update set
+      start_ms = excluded.start_ms, end_ms = excluded.end_ms,
+      source_language = excluded.source_language, text = excluded.text,
+      normalized_text = excluded.normalized_text
+  `;
+
+  return await fetchStoredSegments(videoId);
+}
+
+async function fetchExistingTranslations(videoId: string, targetLanguage: string) {
+  const rows = await sql<Array<{ segment_index: number; text: string }>>`
+    select ts.segment_index, tr.text
+    from translated_segments tr
+    join transcript_segments ts on ts.id = tr.segment_id
+    where tr.video_id = ${videoId} and tr.language_code = ${targetLanguage}
+  `;
+  const map = new Map<number, string>();
+  for (const row of rows) {
+    if (row.text.trim()) map.set(row.segment_index, row.text.trim());
+  }
+  return map;
+}
+
+async function storeTranslations(
+  videoId: string,
+  targetLanguage: string,
+  model: string,
+  segmentIdByIndex: Map<number, string>,
+  translations: Array<{ index: number; text: string }>,
+) {
+  const rows = translations.flatMap((translation) => {
+    const segmentId = segmentIdByIndex.get(translation.index);
+    if (!segmentId) return [];
+    return [{
+      segment_id: segmentId,
+      video_id: videoId,
+      language_code: targetLanguage,
+      text: translation.text,
+      model,
+      version: 1,
+    }];
+  });
+
+  if (rows.length === 0) return;
+
+  await sql`
+    insert into translated_segments ${sql(rows)}
+    on conflict (segment_id, language_code, version) do update set
+      text = excluded.text, model = excluded.model
+  `;
+}
+
+function translationProgress(position: number, total: number) {
+  if (total <= 0) return 25;
+  return Math.min(95, 25 + Math.floor((position / total) * 70));
+}
