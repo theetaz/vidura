@@ -171,3 +171,72 @@
     @apply rounded-md border-2 border-foreground bg-card text-foreground shadow-[3px_3px_0_var(--vidura-ink)] hover:bg-vidura-mint;
   }
 }
+
+/* Markdown rendering inside assistant chat bubbles */
+.chat-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p {
+  margin: 0 0 0.5rem;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.15rem;
+  display: block;
+}
+
+.chat-markdown ul {
+  list-style: disc;
+}
+
+.chat-markdown ol {
+  list-style: decimal;
+}
+
+.chat-markdown li {
+  margin: 0.15rem 0;
+}
+
+.chat-markdown strong {
+  font-weight: 800;
+}
+
+.chat-markdown code {
+  border-radius: 0.25rem;
+  background: var(--vidura-cream, #f6efdf);
+  padding: 0.1rem 0.3rem;
+  font-size: 0.85em;
+  font-weight: 700;
+}
+
+.chat-markdown pre {
+  margin: 0.35rem 0 0.5rem;
+  overflow-x: auto;
+  border: 2px solid var(--foreground, #1f2937);
+  border-radius: 0.5rem;
+  background: var(--vidura-cream, #f6efdf);
+  padding: 0.6rem;
+}
+
+.chat-markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.chat-markdown a {
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.chat-markdown blockquote {
+  margin: 0.35rem 0 0.5rem;
+  border-left: 3px solid var(--foreground, #1f2937);
+  padding-left: 0.6rem;
+}

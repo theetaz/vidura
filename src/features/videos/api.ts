@@ -132,6 +132,19 @@ export type VideoNote = {
   createdAt: string;
 };
 
+export const chatSessionKeys = {
+  list: ["chat-sessions"] as const,
+  messages: (threadId: string | null) =>
+    ["chat-sessions", threadId, "messages"] as const,
+};
+
+export type ChatSession = {
+  id: string;
+  title: string;
+  updatedAt: string;
+  createdAt: string;
+};
+
 export async function fetchLibraryVideos(): Promise<LibraryVideo[]> {
   const client = requireSupabase();
   const { data: videoRows, error: videoError } = await client
@@ -403,13 +416,96 @@ export async function deleteVideo(videoId: string) {
   }
 }
 
+// Library chat sessions (threads without a video). Each visit to /chats
+// starts a new session; old sessions are listed, renamed, deleted, resumed.
+export async function fetchChatSessions(): Promise<ChatSession[]> {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("chat_threads")
+    .select("id, title, created_at, updated_at")
+    .is("video_id", null)
+    .order("updated_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as Array<{
+    id: string;
+    title: string | null;
+    created_at: string;
+    updated_at: string;
+  }>).map((thread) => ({
+    id: thread.id,
+    title: thread.title?.trim() || "New chat",
+    createdAt: thread.created_at,
+    updatedAt: thread.updated_at,
+  }));
+}
+
+export async function renameChatSession(input: {
+  threadId: string;
+  title: string;
+}) {
+  const client = requireSupabase();
+  const { error } = await client
+    .from("chat_threads")
+    .update({ title: input.title.trim().slice(0, 80) })
+    .eq("id", input.threadId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function deleteChatSession(threadId: string) {
+  const client = requireSupabase();
+  const { error } = await client
+    .from("chat_threads")
+    .delete()
+    .eq("id", threadId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function fetchSessionMessages(
+  threadId: string,
+): Promise<ChatMessage[]> {
+  const client = requireSupabase();
+  const { data: rows, error } = await client
+    .from("chat_messages")
+    .select("id, role, content, metadata, created_at")
+    .eq("thread_id", threadId)
+    .neq("role", "system")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  return ((rows ?? []) as ChatMessageRow[]).map((message) => ({
+    id: message.id,
+    role: message.role === "user" ? "user" : "assistant",
+    content: message.content,
+    citation: typeof message.metadata?.citation === "string"
+      ? message.metadata.citation
+      : undefined,
+  }));
+}
+
 // Streams an answer from the video-chat edge function. videoId null asks the
-// library-wide assistant. onDelta receives incremental answer text; the
-// promise resolves once the full answer has been persisted server-side.
+// library-wide assistant. threadId continues a saved session; when omitted
+// the server opens a new session and reports its id via onThreadId. onDelta
+// receives incremental answer text; the promise resolves once the full
+// answer has been persisted server-side.
 export async function streamVideoChat(input: {
   videoId: string | null;
+  threadId?: string | null;
   question: string;
   onDelta: (text: string) => void;
+  onThreadId?: (threadId: string) => void;
 }): Promise<void> {
   const client = requireSupabase();
   const {
@@ -429,6 +525,7 @@ export async function streamVideoChat(input: {
     },
     body: JSON.stringify({
       videoId: input.videoId,
+      threadId: input.threadId ?? null,
       question: input.question,
     }),
   });
@@ -475,12 +572,15 @@ export async function streamVideoChat(input: {
           type: "meta" | "delta" | "done" | "error";
           text?: string;
           message?: string;
+          threadId?: string;
         };
 
         if (event.type === "delta" && event.text) {
           input.onDelta(event.text);
         } else if (event.type === "error") {
           throw new Error(event.message ?? "Chat response failed.");
+        } else if (event.type === "meta" && event.threadId) {
+          input.onThreadId?.(event.threadId);
         } else if (event.type === "done") {
           finished = true;
         }

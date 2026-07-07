@@ -1,6 +1,7 @@
 import {
   type ChangeEvent,
   type FormEvent,
+  type ReactNode,
   memo,
   useCallback,
   useEffect,
@@ -19,6 +20,8 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   BadgeCheckIcon,
   BellIcon,
@@ -31,6 +34,7 @@ import {
   Trash2Icon,
   DownloadIcon,
   FilterIcon,
+  HistoryIcon,
   HomeIcon,
   LinkIcon,
   ListVideoIcon,
@@ -43,12 +47,15 @@ import {
   MoreHorizontalIcon,
   NotebookPenIcon,
   PauseIcon,
+  PencilIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
   SendIcon,
   SettingsIcon,
+  SquarePenIcon,
   UploadIcon,
+  XIcon,
 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -113,14 +120,19 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/features/auth/use-auth";
 import {
   addVideoNote,
+  chatSessionKeys,
   createVideoJob,
+  deleteChatSession,
   deleteVideo,
   deleteVideoNote,
   fetchChatMessages,
+  fetchChatSessions,
   fetchLibraryVideos,
+  fetchSessionMessages,
   fetchVideoNotes,
   fetchVideoTranscript,
   regenerateSubtitles,
+  renameChatSession,
   resumeVideoJob,
   streamVideoChat,
   videoQueryKeys,
@@ -300,14 +312,8 @@ function ViduraApp() {
               element={<WatchScreen videos={videosQuery.data ?? []} />}
               path="/watch/:videoId"
             />
-            <Route
-              element={<ChatScreen standalone videos={videosQuery.data ?? []} />}
-              path="/chats"
-            />
-            <Route
-              element={<ChatScreen standalone videos={videosQuery.data ?? []} />}
-              path="/chats/:videoId"
-            />
+            <Route element={<ChatScreen />} path="/chats" />
+            <Route element={<ChatScreen />} path="/chats/session/:threadId" />
             <Route element={<SettingsScreen />} path="/settings" />
             <Route element={<Navigate replace to="/library" />} path="*" />
           </Routes>
@@ -517,6 +523,20 @@ function TopBar() {
           Learn better, one video at a time.
         </p>
       </div>
+      {currentView === "chat" ? (
+        <ChatSessionsSheet
+          trigger={
+            <Button
+              className="vidura-icon-button ml-auto shrink-0"
+              size="icon-lg"
+              variant="outline"
+            >
+              <HistoryIcon />
+              <span className="sr-only">Chat history</span>
+            </Button>
+          }
+        />
+      ) : null}
       <Sheet>
         <SheetTrigger asChild>
           <Button className="vidura-icon-button shrink-0" size="icon-lg" variant="outline">
@@ -2334,13 +2354,25 @@ function formatNoteTimestamp(milliseconds: number) {
 
 type ChatPanelVariant = "panel" | "overlay" | "page";
 
+const libraryQuickPrompts = [
+  "What videos do I have?",
+  "Summarize my latest video",
+  "What did I note down recently?",
+];
+
 // videoId null = the library-wide assistant that can answer across every
-// video in the library with title + timestamp citations.
+// video in the library with title + timestamp citations. threadId selects a
+// saved library session; when null the server opens a fresh session on the
+// first message and reports it through onThreadCreated.
 const ChatPanel = memo(function ChatPanel({
   videoId,
+  threadId = null,
+  onThreadCreated,
   variant = "panel",
 }: {
   videoId: string | null;
+  threadId?: string | null;
+  onThreadCreated?: (threadId: string) => void;
   variant?: ChatPanelVariant;
 }) {
   const [draft, setDraft] = useState("");
@@ -2350,12 +2382,21 @@ const ChatPanel = memo(function ChatPanel({
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chatQuery = useQuery({
-    queryKey: videoQueryKeys.chat(videoId),
-    queryFn: () => fetchChatMessages(videoId),
+    queryKey: videoId
+      ? videoQueryKeys.chat(videoId)
+      : chatSessionKeys.messages(threadId),
+    queryFn: () =>
+      videoId
+        ? fetchChatMessages(videoId)
+        : threadId
+        ? fetchSessionMessages(threadId)
+        : Promise.resolve([]),
+    enabled: Boolean(videoId || threadId),
   });
   const messages = chatQuery.data ?? [];
   const isStreaming = pendingQuestion !== null;
   const isThinking = isStreaming && streamingAnswer.length === 0;
+  const isLoadingHistory = chatQuery.isPending && Boolean(videoId || threadId);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -2377,15 +2418,42 @@ const ChatPanel = memo(function ChatPanel({
     setPendingQuestion(trimmedQuestion);
     setStreamingAnswer("");
 
+    let createdThreadId: string | null = null;
+
     try {
       await streamVideoChat({
         videoId,
+        threadId,
         question: trimmedQuestion,
         onDelta: (text) => setStreamingAnswer((current) => current + text),
+        onThreadId: (id) => {
+          createdThreadId = id;
+        },
       });
-      await queryClient.invalidateQueries({
-        queryKey: videoQueryKeys.chat(videoId),
-      });
+
+      if (videoId) {
+        await queryClient.invalidateQueries({
+          queryKey: videoQueryKeys.chat(videoId),
+        });
+      } else {
+        const finalThreadId = threadId ?? createdThreadId;
+
+        if (finalThreadId) {
+          // Warm the cache before the route switches to the new session so
+          // the conversation never flashes a loading state.
+          await queryClient.prefetchQuery({
+            queryKey: chatSessionKeys.messages(finalThreadId),
+            queryFn: () => fetchSessionMessages(finalThreadId),
+          });
+          await queryClient.invalidateQueries({
+            queryKey: chatSessionKeys.messages(finalThreadId),
+          });
+          void queryClient.invalidateQueries({
+            queryKey: chatSessionKeys.list,
+            exact: true,
+          });
+        }
+      }
     } catch (streamError) {
       setChatError(
         streamError instanceof Error
@@ -2393,6 +2461,10 @@ const ChatPanel = memo(function ChatPanel({
           : "Could not get an answer. Try again.",
       );
     } finally {
+      if (createdThreadId && !threadId && !videoId) {
+        onThreadCreated?.(createdThreadId);
+      }
+
       setPendingQuestion(null);
       setStreamingAnswer("");
     }
@@ -2406,11 +2478,114 @@ const ChatPanel = memo(function ChatPanel({
   const emptyNotice = videoId
     ? "Ask anything about this video — answers cite the exact timestamps."
     : "Ask anything about your library — answers name the video and timestamp.";
+  const prompts = videoId ? quickPrompts.slice(0, 3) : libraryQuickPrompts;
+  const showPrompts = variant === "page"
+    ? messages.length === 0 && !isStreaming && !isLoadingHistory
+    : true;
   const scrollHeightClass = variant === "panel"
     ? "h-[230px]"
-    : variant === "page"
-    ? "h-[min(58dvh,640px)]"
     : "min-h-0 flex-1";
+
+  const body = (
+    <>
+      {showPrompts ? (
+        <div className="flex flex-wrap gap-2">
+          {prompts.map((prompt) => (
+            <Button
+              className="h-auto rounded-md border-2 border-foreground bg-vidura-cream px-3 py-2 text-xs"
+              disabled={isStreaming}
+              key={prompt}
+              onClick={() => void askQuestion(prompt)}
+              type="button"
+              variant="outline"
+            >
+              {prompt}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+      <div
+        className={cn("overflow-y-auto pr-2", scrollHeightClass)}
+        ref={scrollRef}
+      >
+        <div className="flex flex-col gap-3">
+          {isLoadingHistory ? (
+            <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-3 text-sm font-bold leading-relaxed text-foreground/65">
+              Loading chat...
+            </div>
+          ) : null}
+          {!isLoadingHistory && messages.length === 0 && !isStreaming ? (
+            <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-3 text-sm font-bold leading-relaxed text-foreground/65">
+              {emptyNotice}
+            </div>
+          ) : null}
+          {messages.map((message) => (
+            <ChatBubble
+              content={message.content}
+              key={message.id}
+              role={message.role}
+            />
+          ))}
+          {pendingQuestion ? (
+            <ChatBubble content={pendingQuestion} role="user" />
+          ) : null}
+          {isThinking ? (
+            <div className="flex max-w-[88%] items-center gap-2 rounded-lg border-2 border-foreground bg-card p-3 text-sm font-bold text-foreground/65 shadow-[2px_2px_0_var(--vidura-ink)]">
+              <Loader2Icon className="size-4 shrink-0 animate-spin" />
+              Thinking...
+            </div>
+          ) : null}
+          {isStreaming && streamingAnswer ? (
+            <ChatBubble content={streamingAnswer} role="assistant" streaming />
+          ) : null}
+          {chatError ? (
+            <div className="rounded-lg border-2 border-foreground bg-vidura-coral/25 p-3 text-sm font-bold text-foreground">
+              {chatError}
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <form className="shrink-0" onSubmit={handleSubmit}>
+        <InputGroup className="h-auto border-2 border-foreground bg-card">
+          <InputGroupTextarea
+            className="min-h-16"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void askQuestion(draft);
+              }
+            }}
+            placeholder={
+              videoId ? "Ask about this video..." : "Ask about any video..."
+            }
+            value={draft}
+          />
+          <InputGroupAddon align="inline-end">
+            <InputGroupButton
+              className="bg-vidura-purple text-foreground"
+              disabled={!draft.trim() || isStreaming}
+              size="icon-sm"
+              type="submit"
+            >
+              {isStreaming ? (
+                <Loader2Icon className="animate-spin" />
+              ) : (
+                <SendIcon />
+              )}
+              <span className="sr-only">Send message</span>
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
+      </form>
+    </>
+  );
+
+  // The page variant renders flat (no card chrome): messages fill the page
+  // and the input stays pinned above the bottom navigation.
+  if (variant === "page") {
+    return <div className="flex min-h-0 flex-1 flex-col gap-3">{body}</div>;
+  }
 
   return (
     <StickerCard
@@ -2424,11 +2599,9 @@ const ChatPanel = memo(function ChatPanel({
         <div className="flex items-center justify-between gap-3">
           <div>
             <CardTitle className="font-display text-2xl font-black">
-              {videoId ? "Chat" : "Library chat"}
+              Chat
             </CardTitle>
-            <CardDescription>
-              {videoId ? "Ask about this video." : "Ask across all your videos."}
-            </CardDescription>
+            <CardDescription>Ask about this video.</CardDescription>
           </div>
           <Avatar className="border-2 border-foreground bg-vidura-purple">
             <AvatarFallback className="bg-transparent font-black text-foreground">
@@ -2443,94 +2616,7 @@ const ChatPanel = memo(function ChatPanel({
           variant === "overlay" && "min-h-0 flex-1",
         )}
       >
-        <div className="flex flex-wrap gap-2">
-          {quickPrompts.slice(0, 3).map((prompt) => (
-            <Button
-              className="h-auto rounded-md border-2 border-foreground bg-vidura-cream px-3 py-2 text-xs"
-              disabled={isStreaming}
-              key={prompt}
-              onClick={() => void askQuestion(prompt)}
-              type="button"
-              variant="outline"
-            >
-              {prompt}
-            </Button>
-          ))}
-        </div>
-        <div
-          className={cn("overflow-y-auto pr-2", scrollHeightClass)}
-          ref={scrollRef}
-        >
-          <div className="flex flex-col gap-3">
-            {chatQuery.isPending ? (
-              <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-3 text-sm font-bold leading-relaxed text-foreground/65">
-                Loading chat...
-              </div>
-            ) : null}
-            {!chatQuery.isPending && messages.length === 0 && !isStreaming ? (
-              <div className="rounded-lg border-2 border-dashed border-foreground bg-vidura-cream p-3 text-sm font-bold leading-relaxed text-foreground/65">
-                {emptyNotice}
-              </div>
-            ) : null}
-            {messages.map((message) => (
-              <ChatBubble
-                content={message.content}
-                key={message.id}
-                role={message.role}
-              />
-            ))}
-            {pendingQuestion ? (
-              <ChatBubble content={pendingQuestion} role="user" />
-            ) : null}
-            {isThinking ? (
-              <div className="flex max-w-[88%] items-center gap-2 rounded-lg border-2 border-foreground bg-card p-3 text-sm font-bold text-foreground/65 shadow-[2px_2px_0_var(--vidura-ink)]">
-                <Loader2Icon className="size-4 shrink-0 animate-spin" />
-                Thinking...
-              </div>
-            ) : null}
-            {isStreaming && streamingAnswer ? (
-              <ChatBubble content={streamingAnswer} role="assistant" streaming />
-            ) : null}
-            {chatError ? (
-              <div className="rounded-lg border-2 border-foreground bg-vidura-coral/25 p-3 text-sm font-bold text-foreground">
-                {chatError}
-              </div>
-            ) : null}
-          </div>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <InputGroup className="h-auto border-2 border-foreground bg-card">
-            <InputGroupTextarea
-              className="min-h-16"
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void askQuestion(draft);
-                }
-              }}
-              placeholder={
-                videoId ? "Ask about this video..." : "Ask about any video..."
-              }
-              value={draft}
-            />
-            <InputGroupAddon align="inline-end">
-              <InputGroupButton
-                className="bg-vidura-purple text-foreground"
-                disabled={!draft.trim() || isStreaming}
-                size="icon-sm"
-                type="submit"
-              >
-                {isStreaming ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : (
-                  <SendIcon />
-                )}
-                <span className="sr-only">Send message</span>
-              </InputGroupButton>
-            </InputGroupAddon>
-          </InputGroup>
-        </form>
+        {body}
       </CardContent>
     </StickerCard>
   );
@@ -2545,24 +2631,205 @@ function ChatBubble({
   role: "user" | "assistant";
   streaming?: boolean;
 }) {
-  // The model is instructed to write plain text, but occasionally emits
-  // markdown emphasis anyway — strip it so bubbles never show raw asterisks.
-  const displayContent = role === "assistant"
-    ? content.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*\*/g, "")
-    : content;
-
   return (
     <div
       className={cn(
-        "max-w-[88%] whitespace-pre-wrap rounded-lg border-2 border-foreground p-3 text-sm font-medium leading-relaxed shadow-[2px_2px_0_var(--vidura-ink)]",
-        role === "user" ? "ml-auto bg-vidura-purple" : "bg-card",
+        "max-w-[88%] rounded-lg border-2 border-foreground p-3 text-sm font-medium leading-relaxed shadow-[2px_2px_0_var(--vidura-ink)]",
+        role === "user"
+          ? "ml-auto whitespace-pre-wrap bg-vidura-purple"
+          : "bg-card",
       )}
     >
-      {displayContent}
+      {role === "assistant" ? (
+        <div className="chat-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
+      ) : (
+        content
+      )}
       {streaming ? (
         <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-foreground/70 align-text-bottom" />
       ) : null}
     </div>
+  );
+}
+
+// Chat session history: pick a previous library chat to continue, rename it,
+// or delete it. Rendered from the mobile top bar and the desktop chat header.
+function ChatSessionsSheet({ trigger }: { trigger: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const navigate = useNavigate();
+  const location = useLocation();
+  const queryClient = useQueryClient();
+  const activeThreadId = location.pathname.startsWith("/chats/session/")
+    ? location.pathname.split("/")[3] ?? null
+    : null;
+  const sessionsQuery = useQuery({
+    queryKey: chatSessionKeys.list,
+    queryFn: fetchChatSessions,
+    enabled: open,
+  });
+  const invalidateSessions = () =>
+    queryClient.invalidateQueries({ queryKey: chatSessionKeys.list, exact: true });
+  const renameMutation = useMutation({
+    mutationFn: renameChatSession,
+    onSuccess: invalidateSessions,
+  });
+  const deleteMutation = useMutation({
+    mutationFn: deleteChatSession,
+    onSuccess: (_, deletedThreadId) => {
+      void invalidateSessions();
+
+      if (deletedThreadId === activeThreadId) {
+        navigate("/chats");
+      }
+    },
+  });
+  const sessions = sessionsQuery.data ?? [];
+
+  function openSession(threadId: string) {
+    setOpen(false);
+    navigate(`/chats/session/${threadId}`);
+  }
+
+  function submitRename(threadId: string) {
+    const title = renameDraft.trim();
+
+    if (title) {
+      renameMutation.mutate({ threadId, title });
+    }
+
+    setRenamingId(null);
+    setRenameDraft("");
+  }
+
+  return (
+    <Sheet onOpenChange={setOpen} open={open}>
+      <SheetTrigger asChild>{trigger}</SheetTrigger>
+      <SheetContent
+        className="flex w-[min(100vw-1.5rem,20rem)] flex-col border-2 border-foreground bg-background p-0"
+        side="right"
+      >
+        <SheetHeader className="border-b-2 border-foreground px-4 py-4">
+          <SheetTitle className="font-display text-2xl font-black">
+            Chat history
+          </SheetTitle>
+          <SheetDescription className="font-semibold text-foreground/55">
+            Continue, rename, or delete a session.
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
+          <Button
+            className="justify-start border-2 border-foreground bg-vidura-mint"
+            onClick={() => {
+              setOpen(false);
+              navigate("/chats");
+            }}
+            variant="secondary"
+          >
+            <SquarePenIcon data-icon="inline-start" />
+            New chat
+          </Button>
+          {sessionsQuery.isPending ? (
+            <InlineLoadingNotice label="Loading sessions..." />
+          ) : null}
+          {!sessionsQuery.isPending && sessions.length === 0 ? (
+            <p className="px-1 text-sm font-bold text-foreground/60">
+              No saved chats yet. Start one and it will appear here.
+            </p>
+          ) : null}
+          {sessions.map((session) => (
+            <div
+              className={cn(
+                "flex items-center gap-1 rounded-md border-2 border-foreground bg-card p-2 shadow-[2px_2px_0_var(--vidura-ink)]",
+                session.id === activeThreadId && "bg-vidura-mint",
+              )}
+              key={session.id}
+            >
+              {renamingId === session.id ? (
+                <>
+                  <InputGroup className="h-9 flex-1 border-2 border-foreground bg-background">
+                    <InputGroupInput
+                      autoFocus
+                      onChange={(event) => setRenameDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          submitRename(session.id);
+                        }
+
+                        if (event.key === "Escape") {
+                          setRenamingId(null);
+                        }
+                      }}
+                      value={renameDraft}
+                    />
+                  </InputGroup>
+                  <Button
+                    aria-label="Save name"
+                    onClick={() => submitRename(session.id)}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <CheckIcon className="size-4" />
+                  </Button>
+                  <Button
+                    aria-label="Cancel rename"
+                    onClick={() => setRenamingId(null)}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <XIcon className="size-4" />
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <button
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => openSession(session.id)}
+                    type="button"
+                  >
+                    <p className="truncate text-sm font-black leading-tight">
+                      {session.title}
+                    </p>
+                    <p className="text-[0.68rem] font-semibold text-foreground/55">
+                      {new Date(session.updatedAt).toLocaleString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  </button>
+                  <Button
+                    aria-label="Rename chat"
+                    onClick={() => {
+                      setRenamingId(session.id);
+                      setRenameDraft(session.title);
+                    }}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <PencilIcon className="size-4" />
+                  </Button>
+                  <Button
+                    aria-label="Delete chat"
+                    disabled={deleteMutation.isPending}
+                    onClick={() => deleteMutation.mutate(session.id)}
+                    size="icon-sm"
+                    variant="ghost"
+                  >
+                    <Trash2Icon className="size-4" />
+                  </Button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -2602,29 +2869,56 @@ function FloatingChatButton({ videoId }: { videoId: string }) {
   );
 }
 
-function ChatScreen({
-  videos,
-}: {
-  standalone?: boolean;
-  videos: LibraryVideo[];
-}) {
-  // /chats/:videoId still opens a focused chat for one video; plain /chats is
-  // the library-wide assistant that can answer across every video.
-  const { videoId } = useParams();
-  const selectedVideo = videoId
-    ? videos.find((video) => video.id === videoId) ?? null
-    : null;
+function ChatScreen() {
+  // /chats always starts a fresh session; /chats/session/:threadId resumes a
+  // saved one from the history sheet.
+  const { threadId } = useParams();
+  const navigate = useNavigate();
 
   return (
-    <section className="mx-auto flex max-w-3xl flex-col gap-3">
-      {selectedVideo ? (
-        <p className="text-sm font-bold text-foreground/60">
-          Chatting about: {selectedVideo.title}
-        </p>
-      ) : null}
+    <section className="mx-auto flex h-[calc(100dvh-17rem)] w-full max-w-3xl flex-col gap-3 lg:h-[calc(100dvh-8.5rem)]">
+      <div className="flex items-center justify-between gap-3">
+        <div className="hidden lg:block">
+          <h2 className="font-display text-4xl font-black tracking-normal">
+            Library chat
+          </h2>
+          <p className="font-medium text-foreground/60">
+            Ask across all your videos — answers cite titles and timestamps.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 lg:ml-auto">
+          <Button
+            className="border-2 border-foreground"
+            onClick={() => navigate("/chats")}
+            size="sm"
+            variant="outline"
+          >
+            <SquarePenIcon data-icon="inline-start" />
+            New chat
+          </Button>
+          <span className="hidden lg:inline-flex">
+            <ChatSessionsSheet
+              trigger={
+                <Button
+                  className="border-2 border-foreground"
+                  size="sm"
+                  variant="outline"
+                >
+                  <HistoryIcon data-icon="inline-start" />
+                  History
+                </Button>
+              }
+            />
+          </span>
+        </div>
+      </div>
       <ChatPanel
+        key={threadId ?? "new"}
+        onThreadCreated={(createdThreadId) =>
+          navigate(`/chats/session/${createdThreadId}`, { replace: true })}
+        threadId={threadId ?? null}
         variant="page"
-        videoId={selectedVideo?.id ?? null}
+        videoId={null}
       />
     </section>
   );

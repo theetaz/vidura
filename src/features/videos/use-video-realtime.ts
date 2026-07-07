@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { videoQueryKeys } from "@/features/videos/api";
+import { chatSessionKeys, videoQueryKeys } from "@/features/videos/api";
 import { supabase } from "@/lib/supabase";
 
 const realtimeTables = [
@@ -26,6 +26,7 @@ type PendingInvalidations = {
   transcriptVideoIds: Set<string>;
   noteVideoIds: Set<string>;
   chat: boolean;
+  chatSessions: boolean;
 };
 
 export function useVideoRealtime(enabled: boolean) {
@@ -43,6 +44,7 @@ export function useVideoRealtime(enabled: boolean) {
       transcriptVideoIds: new Set(),
       noteVideoIds: new Set(),
       chat: false,
+      chatSessions: false,
     };
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
@@ -83,7 +85,17 @@ export function useVideoRealtime(enabled: boolean) {
         // only the actively viewed chat refetches.
         void queryClient.invalidateQueries({
           predicate: (query) =>
-            query.queryKey[0] === "videos" && query.queryKey[2] === "chat",
+            (query.queryKey[0] === "videos" && query.queryKey[2] === "chat") ||
+            (query.queryKey[0] === "chat-sessions" &&
+              query.queryKey[2] === "messages"),
+        });
+      }
+
+      if (pending.chatSessions) {
+        pending.chatSessions = false;
+        void queryClient.invalidateQueries({
+          queryKey: chatSessionKeys.list,
+          exact: true,
         });
       }
     };
@@ -151,6 +163,9 @@ function markPending(
       }
       break;
     case "chat_threads":
+      // Session titles and updated_at live on the thread row.
+      pending.chatSessions = true;
+      break;
     case "chat_messages":
       pending.chat = true;
       break;
