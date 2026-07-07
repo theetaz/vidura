@@ -85,8 +85,13 @@ function fallbackMetadata(videoId: string): VideoMetadata {
   };
 }
 
-// Runs yt-dlp once to obtain BOTH metadata and the English transcript, so a
-// single extraction covers the whole processing pipeline.
+// Obtains BOTH metadata and the English transcript via yt-dlp. On a blocked
+// datacenter IP this needs cookies (YOUTUBE_COOKIES_FILE) or a residential
+// proxy (YOUTUBE_PROXY_URL); otherwise it fails with a clear error.
+//
+// A Cloudflare Worker relay was evaluated and rejected: YouTube serves flagged
+// Cloudflare IPs a DECOY video whose response echoes the requested videoId but
+// carries a different video's title and captions — undetectable and unsafe.
 export async function fetchYouTubeVideoData(
   videoId: string,
 ): Promise<YouTubeVideoData> {
