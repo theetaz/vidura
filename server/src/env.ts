@@ -32,6 +32,13 @@ export const env = {
   // from a logged-in YouTube session let yt-dlp bypass the bot wall on a
   // flagged datacenter IP. Used only when the file exists.
   youtubeCookiesFile: optional("YOUTUBE_COOKIES_FILE"),
+  // Official Google APIs (recommended): Gemini ingests public YouTube URLs on
+  // Google's own infrastructure for transcription, and the YouTube Data API
+  // serves exact metadata. One Cloud Console API key can serve both when the
+  // "Generative Language API" and "YouTube Data API v3" are enabled.
+  geminiApiKey: optional("GEMINI_API_KEY"),
+  geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash"),
+  youtubeApiKey: optional("YOUTUBE_API_KEY"),
   // Email/password is a local-testing convenience; production uses Google only.
   emailPasswordAuth: optional("AUTH_EMAIL_PASSWORD", "false") === "true",
   get googleEnabled() {

@@ -9,6 +9,10 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { env } from "../env.ts";
+import {
+  fetchMetadataViaDataApi,
+  fetchTranscriptViaGemini,
+} from "./google.ts";
 
 export type ParsedYouTubeUrl = {
   videoId: string;
@@ -86,15 +90,47 @@ function fallbackMetadata(videoId: string): VideoMetadata {
 }
 
 // Obtains BOTH metadata and the English transcript via yt-dlp. On a blocked
-// datacenter IP this needs cookies (YOUTUBE_COOKIES_FILE) or a residential
-// proxy (YOUTUBE_PROXY_URL); otherwise it fails with a clear error.
+// Transcript + metadata source order:
 //
-// A Cloudflare Worker relay was evaluated and rejected: YouTube serves flagged
-// Cloudflare IPs a DECOY video whose response echoes the requested videoId but
-// carries a different video's title and captions — undetectable and unsafe.
+//  1. Official Google APIs (recommended, no scraping): Gemini video
+//     understanding transcribes the public YouTube URL on Google's own
+//     infrastructure; the YouTube Data API supplies exact metadata.
+//  2. yt-dlp fallback — on a blocked datacenter IP this needs cookies
+//     (YOUTUBE_COOKIES_FILE) or a residential proxy (YOUTUBE_PROXY_URL).
+//
+// (A Cloudflare Worker relay was evaluated and rejected: YouTube serves
+// flagged Cloudflare IPs a DECOY video that echoes the requested videoId but
+// carries a different video's captions — undetectable and unsafe.)
 export async function fetchYouTubeVideoData(
   videoId: string,
 ): Promise<YouTubeVideoData> {
+  let geminiError: Error | null = null;
+
+  if (env.geminiApiKey) {
+    try {
+      const segments = await fetchTranscriptViaGemini(videoId);
+
+      if (segments && segments.length > 0) {
+        const metadata = await fetchMetadataViaDataApi(videoId) ??
+          fallbackMetadata(videoId);
+        return { metadata, segments };
+      }
+    } catch (error) {
+      geminiError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  try {
+    return await fetchViaYtDlp(videoId);
+  } catch (ytDlpError) {
+    // Surface the more actionable error: Gemini's when configured, since
+    // that's the intended primary path.
+    if (geminiError) throw geminiError;
+    throw ytDlpError;
+  }
+}
+
+async function fetchViaYtDlp(videoId: string): Promise<YouTubeVideoData> {
   const dir = await mkdtemp(join(tmpdir(), "vidura-yt-"));
 
   try {
@@ -147,6 +183,9 @@ export async function fetchYouTubeVideoData(
 export async function fetchYouTubeMetadata(
   videoId: string,
 ): Promise<VideoMetadata> {
+  const viaDataApi = await fetchMetadataViaDataApi(videoId);
+  if (viaDataApi) return viaDataApi;
+
   try {
     const { stdout } = await runYtDlp([
       "--skip-download",
