@@ -251,8 +251,12 @@ function loadYouTubeIframeApi() {
 function ViduraApp() {
   const selectedVideoId = useAppStore((state) => state.selectedVideoId);
   const setSelectedVideoId = useAppStore((state) => state.setSelectedVideoId);
+  const location = useLocation();
   const auth = useAuth();
   const videosQuery = useLibraryVideos(auth.configured && Boolean(auth.session));
+  // The chat page is a full-height flex column so its composer pins directly
+  // above the bottom nav instead of floating in reserved padding.
+  const isChatRoute = location.pathname.startsWith("/chats");
 
   useVideoRealtime(auth.configured && Boolean(auth.session));
   useStaleJobRecovery(videosQuery.data);
@@ -288,7 +292,18 @@ function ViduraApp() {
     <div className="min-h-dvh bg-background text-foreground">
       <div className="mx-auto flex min-h-dvh w-full max-w-[1760px] flex-col lg:flex-row">
         <DesktopSidebar />
-        <main className="min-w-0 flex-1 px-4 pb-36 pt-4 sm:px-6 sm:pb-40 lg:px-6 lg:pb-7 xl:px-7">
+        <main
+          className={cn(
+            "min-w-0 flex-1 px-4 pt-4 sm:px-6 lg:px-6 xl:px-7",
+            isChatRoute
+              // Clear the floating nav (~4.75rem mobile / ~5.25rem sm) plus a
+              // small gap, instead of the 9rem reserved for scrolling pages,
+              // and become a flex column so the chat section fills the exact
+              // remaining height with its composer just above the nav.
+              ? "flex flex-col overflow-hidden pb-[5.5rem] sm:pb-24 lg:pb-7"
+              : "pb-36 sm:pb-40 lg:pb-7",
+          )}
+        >
           <TopBar />
           <Routes>
             <Route element={<Navigate replace to="/library" />} path="/" />
@@ -2876,8 +2891,8 @@ function ChatScreen() {
   const navigate = useNavigate();
 
   return (
-    <section className="mx-auto flex h-[calc(100dvh-17rem)] w-full max-w-3xl flex-col gap-3 lg:h-[calc(100dvh-8.5rem)]">
-      <div className="flex items-center justify-between gap-3">
+    <section className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-3 pb-2 lg:pb-4">
+      <div className="flex shrink-0 items-center justify-between gap-3">
         <div className="hidden lg:block">
           <h2 className="font-display text-4xl font-black tracking-normal">
             Library chat
