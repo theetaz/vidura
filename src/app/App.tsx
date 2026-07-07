@@ -121,12 +121,15 @@ import { useAuth } from "@/features/auth/use-auth";
 import {
   addVideoNote,
   chatSessionKeys,
+  chatSettingsKey,
   createVideoJob,
+  defaultChatSettings,
   deleteChatSession,
   deleteVideo,
   deleteVideoNote,
   fetchChatMessages,
   fetchChatSessions,
+  fetchChatSettings,
   fetchLibraryVideos,
   fetchSessionMessages,
   fetchVideoNotes,
@@ -134,8 +137,10 @@ import {
   regenerateSubtitles,
   renameChatSession,
   resumeVideoJob,
+  saveChatSettings,
   streamVideoChat,
   videoQueryKeys,
+  type ChatSettings,
   type LibraryVideo,
 } from "@/features/videos/api";
 import { useVideoRealtime } from "@/features/videos/use-video-realtime";
@@ -3054,7 +3059,7 @@ function SettingsScreen() {
   const setSubtitleOpacity = useAppStore((state) => state.setSubtitleOpacity);
 
   return (
-    <section className="mx-auto max-w-3xl">
+    <section className="mx-auto flex max-w-3xl flex-col gap-4">
       <StickerPanel
         description="Tune subtitle readability for mobile and desktop playback."
         title="Settings"
@@ -3151,16 +3156,202 @@ function SettingsScreen() {
               </Badge>
             </div>
           </FieldSet>
-          <Field>
-            <FieldLabel>Study notes</FieldLabel>
-            <Textarea
-              className="min-h-28 border-2 border-foreground bg-card"
-              placeholder="Add personal notes for this lesson..."
-            />
-          </Field>
         </FieldGroup>
       </StickerPanel>
+      <ChatSettingsPanel />
     </section>
+  );
+}
+
+const chatLanguageOptions: Array<{
+  value: ChatSettings["responseLanguage"];
+  label: string;
+}> = [
+  { value: "auto", label: "Auto-detect (match my question)" },
+  { value: "si", label: "සිංහල — Sinhala (Unicode)" },
+  { value: "en", label: "English" },
+  { value: "singlish", label: "Singlish (Sinhala in English letters)" },
+];
+
+const chatChoiceSets: Array<{
+  key: "answerStyle" | "memoryDepth" | "retrievalDepth" | "creativity";
+  title: string;
+  description: string;
+  options: Array<{ value: string; label: string }>;
+}> = [
+  {
+    key: "answerStyle",
+    title: "Answer style",
+    description: "How long and detailed replies should be.",
+    options: [
+      { value: "concise", label: "Concise" },
+      { value: "balanced", label: "Balanced" },
+      { value: "detailed", label: "Detailed" },
+    ],
+  },
+  {
+    key: "memoryDepth",
+    title: "Conversation memory",
+    description: "How much of the current chat the assistant keeps in mind.",
+    options: [
+      { value: "short", label: "Short" },
+      { value: "medium", label: "Medium" },
+      { value: "long", label: "Long" },
+    ],
+  },
+  {
+    key: "retrievalDepth",
+    title: "Retrieval depth",
+    description:
+      "How many transcript lines the library assistant searches per question.",
+    options: [
+      { value: "focused", label: "Focused" },
+      { value: "standard", label: "Standard" },
+      { value: "broad", label: "Broad" },
+    ],
+  },
+  {
+    key: "creativity",
+    title: "Creativity",
+    description: "Lower stays close to the source; higher is more expressive.",
+    options: [
+      { value: "focused", label: "Focused" },
+      { value: "balanced", label: "Balanced" },
+      { value: "creative", label: "Creative" },
+    ],
+  },
+];
+
+function ChatSettingsPanel() {
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({
+    queryKey: chatSettingsKey,
+    queryFn: fetchChatSettings,
+  });
+  const [draft, setDraft] = useState<ChatSettings | null>(null);
+  const saveMutation = useMutation({
+    mutationFn: saveChatSettings,
+    onSuccess: (_, saved) => {
+      queryClient.setQueryData(chatSettingsKey, saved);
+    },
+  });
+
+  // Seed the editable draft once the saved settings load.
+  useEffect(() => {
+    if (settingsQuery.data && !draft) {
+      setDraft(settingsQuery.data);
+    }
+  }, [settingsQuery.data, draft]);
+
+  const current = draft ?? settingsQuery.data ?? defaultChatSettings;
+  const saved = settingsQuery.data ?? defaultChatSettings;
+  const isDirty = draft
+    ? (Object.keys(saved) as Array<keyof ChatSettings>).some(
+      (key) => draft[key] !== saved[key],
+    )
+    : false;
+
+  function update<K extends keyof ChatSettings>(
+    key: K,
+    value: ChatSettings[K],
+  ) {
+    setDraft({ ...current, [key]: value });
+  }
+
+  return (
+    <StickerPanel
+      description="Control how the AI assistant answers your video and library chats."
+      title="Chat assistant"
+    >
+      <FieldGroup>
+        <Field>
+          <FieldLabel>Response language</FieldLabel>
+          <FieldDescription>
+            Force every answer into one language, or let it match your question.
+          </FieldDescription>
+          <Select
+            onValueChange={(value) =>
+              update("responseLanguage", value as ChatSettings["responseLanguage"])}
+            value={current.responseLanguage}
+          >
+            <SelectTrigger className="h-11 border-2 border-foreground bg-card">
+              <SelectValue placeholder="Select language" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {chatLanguageOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </Field>
+        {chatChoiceSets.map((choice) => (
+          <FieldSet key={choice.key}>
+            <FieldTitle>{choice.title}</FieldTitle>
+            <FieldDescription>{choice.description}</FieldDescription>
+            <ToggleGroup
+              className="justify-start"
+              onValueChange={(value) => {
+                if (value) {
+                  update(
+                    choice.key,
+                    value as ChatSettings[typeof choice.key],
+                  );
+                }
+              }}
+              type="single"
+              value={current[choice.key]}
+            >
+              {choice.options.map((option) => (
+                <ToggleGroupItem
+                  className="rounded-md border-2 border-foreground bg-card data-[state=on]:bg-vidura-mint"
+                  key={option.value}
+                  value={option.value}
+                >
+                  {option.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </FieldSet>
+        ))}
+        <Field>
+          <FieldLabel>Custom instructions</FieldLabel>
+          <FieldDescription>
+            Give the assistant a persona or rules, e.g. "Explain like I'm 12"
+            or "Always add a real-world example."
+          </FieldDescription>
+          <Textarea
+            className="min-h-24 border-2 border-foreground bg-card"
+            maxLength={800}
+            onChange={(event) =>
+              update("customInstructions", event.target.value)}
+            placeholder="Optional — shape how the assistant talks to you..."
+            value={current.customInstructions}
+          />
+        </Field>
+        <div className="flex items-center gap-3">
+          <CartoonButton
+            disabled={!isDirty || saveMutation.isPending}
+            onClick={() => saveMutation.mutate(current)}
+            type="button"
+          >
+            {saveMutation.isPending ? "Saving..." : "Save chat settings"}
+            <CheckIcon data-icon="inline-end" />
+          </CartoonButton>
+          {saveMutation.isSuccess && !isDirty ? (
+            <span className="text-sm font-bold text-foreground/60">Saved.</span>
+          ) : null}
+          {saveMutation.isError ? (
+            <span className="text-sm font-bold text-vidura-coral">
+              Could not save. Try again.
+            </span>
+          ) : null}
+        </div>
+      </FieldGroup>
+    </StickerPanel>
   );
 }
 

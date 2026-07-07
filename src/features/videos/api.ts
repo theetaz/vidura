@@ -145,6 +145,92 @@ export type ChatSession = {
   createdAt: string;
 };
 
+export type ChatSettings = {
+  responseLanguage: "auto" | "si" | "en" | "singlish";
+  answerStyle: "concise" | "balanced" | "detailed";
+  customInstructions: string;
+  memoryDepth: "short" | "medium" | "long";
+  retrievalDepth: "focused" | "standard" | "broad";
+  creativity: "focused" | "balanced" | "creative";
+};
+
+export const defaultChatSettings: ChatSettings = {
+  responseLanguage: "auto",
+  answerStyle: "balanced",
+  customInstructions: "",
+  memoryDepth: "medium",
+  retrievalDepth: "standard",
+  creativity: "balanced",
+};
+
+export const chatSettingsKey = ["chat-settings"] as const;
+
+export async function fetchChatSettings(): Promise<ChatSettings> {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("user_chat_settings")
+    .select(
+      "response_language, answer_style, custom_instructions, memory_depth, retrieval_depth, creativity",
+    )
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return defaultChatSettings;
+  }
+
+  const row = data as {
+    response_language: ChatSettings["responseLanguage"];
+    answer_style: ChatSettings["answerStyle"];
+    custom_instructions: string | null;
+    memory_depth: ChatSettings["memoryDepth"];
+    retrieval_depth: ChatSettings["retrievalDepth"];
+    creativity: ChatSettings["creativity"];
+  };
+
+  return {
+    responseLanguage: row.response_language,
+    answerStyle: row.answer_style,
+    customInstructions: row.custom_instructions ?? "",
+    memoryDepth: row.memory_depth,
+    retrievalDepth: row.retrieval_depth,
+    creativity: row.creativity,
+  };
+}
+
+export async function saveChatSettings(settings: ChatSettings) {
+  const client = requireSupabase();
+  const {
+    data: { user },
+  } = await client.auth.getUser();
+
+  if (!user) {
+    throw new Error("You must be signed in to change chat settings.");
+  }
+
+  const { error } = await client
+    .from("user_chat_settings")
+    .upsert(
+      {
+        owner_id: user.id,
+        response_language: settings.responseLanguage,
+        answer_style: settings.answerStyle,
+        custom_instructions: settings.customInstructions.slice(0, 800),
+        memory_depth: settings.memoryDepth,
+        retrieval_depth: settings.retrievalDepth,
+        creativity: settings.creativity,
+      },
+      { onConflict: "owner_id" },
+    );
+
+  if (error) {
+    throw error;
+  }
+}
+
 export async function fetchLibraryVideos(): Promise<LibraryVideo[]> {
   const client = requireSupabase();
   const { data: videoRows, error: videoError } = await client
