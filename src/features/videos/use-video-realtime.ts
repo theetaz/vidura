@@ -1,24 +1,19 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { chatSessionKeys, videoQueryKeys } from "@/features/videos/api";
-import { supabase } from "@/lib/supabase";
+import { apiBaseUrl } from "@/lib/api";
 
-const realtimeTables = [
-  "videos",
-  "processing_jobs",
-  "transcript_segments",
-  "translated_segments",
-  "chat_threads",
-  "chat_messages",
-  "video_notes",
-] as const;
+// Tables the API emits change events for.
+type ChangeTable =
+  | "videos"
+  | "processing_jobs"
+  | "transcript_segments"
+  | "translated_segments"
+  | "chat_threads"
+  | "chat_messages"
+  | "video_notes";
 
-type RealtimeTable = (typeof realtimeTables)[number];
-
-// How long to wait after the last realtime event before refetching. Translation
-// batches insert ~100 translated_segments rows in quick bursts; without
-// coalescing, every insert triggers its own refetch and the client floods
-// itself with hundreds of REST requests.
+// Coalesce bursts (translation inserts ~100 rows) before invalidating.
 const FLUSH_DELAY_MS = 400;
 
 type PendingInvalidations = {
@@ -33,12 +28,8 @@ export function useVideoRealtime(enabled: boolean) {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    if (!enabled || !supabase) {
-      return;
-    }
+    if (!enabled) return;
 
-    const client = supabase;
-    const channel = client.channel("vidura-data-sync");
     const pending: PendingInvalidations = {
       library: false,
       transcriptVideoIds: new Set(),
@@ -51,99 +42,72 @@ export function useVideoRealtime(enabled: boolean) {
 
     const flush = () => {
       flushTimer = null;
-
-      if (disposed) {
-        return;
-      }
+      if (disposed) return;
 
       if (pending.library) {
         pending.library = false;
-        void queryClient.invalidateQueries({
-          queryKey: videoQueryKeys.all,
-          exact: true,
-        });
+        void queryClient.invalidateQueries({ queryKey: videoQueryKeys.all, exact: true });
       }
-
       for (const videoId of pending.transcriptVideoIds) {
-        void queryClient.invalidateQueries({
-          queryKey: videoQueryKeys.transcript(videoId),
-        });
+        void queryClient.invalidateQueries({ queryKey: videoQueryKeys.transcript(videoId) });
       }
       pending.transcriptVideoIds.clear();
-
       for (const videoId of pending.noteVideoIds) {
-        void queryClient.invalidateQueries({
-          queryKey: videoQueryKeys.notes(videoId),
-        });
+        void queryClient.invalidateQueries({ queryKey: videoQueryKeys.notes(videoId) });
       }
       pending.noteVideoIds.clear();
-
       if (pending.chat) {
         pending.chat = false;
-        // chat_messages rows only carry thread_id, so the video cannot be
-        // derived from the payload. Invalidate all chat queries instead —
-        // only the actively viewed chat refetches.
         void queryClient.invalidateQueries({
           predicate: (query) =>
             (query.queryKey[0] === "videos" && query.queryKey[2] === "chat") ||
-            (query.queryKey[0] === "chat-sessions" &&
-              query.queryKey[2] === "messages"),
+            (query.queryKey[0] === "chat-sessions" && query.queryKey[2] === "messages"),
         });
       }
-
       if (pending.chatSessions) {
         pending.chatSessions = false;
-        void queryClient.invalidateQueries({
-          queryKey: chatSessionKeys.list,
-          exact: true,
-        });
+        void queryClient.invalidateQueries({ queryKey: chatSessionKeys.list, exact: true });
       }
     };
 
     const scheduleFlush = () => {
-      if (!flushTimer) {
-        flushTimer = setTimeout(flush, FLUSH_DELAY_MS);
-      }
+      if (!flushTimer) flushTimer = setTimeout(flush, FLUSH_DELAY_MS);
     };
 
-    for (const table of realtimeTables) {
-      channel.on(
-        "postgres_changes",
-        { event: "*", schema: "public", table },
-        (payload) => {
-          const videoId = getVideoId(payload.new ?? payload.old);
-          markPending(pending, table, videoId);
-          scheduleFlush();
-        },
-      );
-    }
-
-    channel.subscribe((status) => {
-      // Refresh everything once when (re)connected so no events were missed
-      // while the socket was down.
-      if (status === "SUBSCRIBED") {
-        void queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
-      }
+    // EventSource sends the session cookie automatically (same-site).
+    const source = new EventSource(`${apiBaseUrl}/api/realtime`, {
+      withCredentials: true,
     });
+
+    source.onmessage = (message) => {
+      let event: { type?: string; table?: ChangeTable; videoId?: string | null };
+      try {
+        event = JSON.parse(message.data);
+      } catch {
+        return;
+      }
+      if (event.type !== "change" || !event.table) return;
+
+      markPending(pending, event.table, event.videoId ?? null);
+      scheduleFlush();
+    };
+
+    // Refresh everything once on (re)connect so nothing is missed.
+    source.onopen = () => {
+      void queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
+    };
 
     return () => {
       disposed = true;
-
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-      }
-
-      void client.removeChannel(channel);
+      if (flushTimer) clearTimeout(flushTimer);
+      source.close();
     };
   }, [enabled, queryClient]);
 }
 
-// Map each table to only the queries whose data actually comes from it, so a
-// chat message doesn't refetch the transcript and a translated segment doesn't
-// refetch the chat.
 function markPending(
   pending: PendingInvalidations,
-  table: RealtimeTable,
+  table: ChangeTable,
   videoId: string | null,
 ) {
   switch (table) {
@@ -153,39 +117,16 @@ function markPending(
       break;
     case "transcript_segments":
     case "translated_segments":
-      if (videoId) {
-        pending.transcriptVideoIds.add(videoId);
-      }
+      if (videoId) pending.transcriptVideoIds.add(videoId);
       break;
     case "video_notes":
-      if (videoId) {
-        pending.noteVideoIds.add(videoId);
-      }
+      if (videoId) pending.noteVideoIds.add(videoId);
       break;
     case "chat_threads":
-      // Session titles and updated_at live on the thread row.
       pending.chatSessions = true;
       break;
     case "chat_messages":
       pending.chat = true;
       break;
   }
-}
-
-function getVideoId(row: unknown) {
-  if (!row || typeof row !== "object") {
-    return null;
-  }
-
-  const record = row as Record<string, unknown>;
-
-  if (typeof record.video_id === "string") {
-    return record.video_id;
-  }
-
-  if (typeof record.id === "string") {
-    return record.id;
-  }
-
-  return null;
 }

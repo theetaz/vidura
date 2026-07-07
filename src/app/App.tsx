@@ -10,7 +10,6 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { User } from "@supabase/supabase-js";
 import {
   Navigate,
   NavLink,
@@ -117,7 +116,7 @@ import {
   ToggleGroupItem,
 } from "@/components/ui/toggle-group";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { useAuth } from "@/features/auth/use-auth";
+import { useAuth, type SessionUser } from "@/features/auth/use-auth";
 import {
   addVideoNote,
   chatSessionKeys,
@@ -149,8 +148,8 @@ import {
   quickPrompts,
   type TranscriptSegment,
 } from "@/features/videos/data";
-import { hasSupabaseConfig } from "@/lib/supabase";
-import { fetchDevYouTubeVideoData, parseTranscriptFile } from "@/lib/transcript";
+import { isApiConfigured } from "@/lib/api";
+import { parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import {
   buildYouTubeWatchUrl,
@@ -401,7 +400,7 @@ function useStaleJobRecovery(videos: LibraryVideo[] | undefined) {
       }
 
       attemptsRef.current.set(job.id, Date.now());
-      void resumeVideoJob(job.id).then(() =>
+      void resumeVideoJob(video.id).then(() =>
         queryClient.invalidateQueries({ queryKey: videoQueryKeys.all })
       ).catch((resumeError) => {
         console.error("Failed to resume stale job", job.id, resumeError);
@@ -613,7 +612,7 @@ function TopBar() {
   );
 }
 
-function getUserDisplayName(user: User | null) {
+function getUserDisplayName(user: SessionUser | null) {
   if (!user) {
     return "Guest";
   }
@@ -631,7 +630,7 @@ function getUserDisplayName(user: User | null) {
   return user.email?.split("@")[0] ?? "User";
 }
 
-function getUserInitials(user: User | null) {
+function getUserInitials(user: SessionUser | null) {
   const displayName = getUserDisplayName(user);
   const parts = displayName.split(/\s+/).filter(Boolean);
 
@@ -647,7 +646,7 @@ function SidebarProfileFooter({
   onSignOut,
   className,
 }: {
-  user: User | null;
+  user: SessionUser | null;
   onSignOut: () => Promise<void>;
   className?: string;
 }) {
@@ -808,6 +807,9 @@ function LibraryScreen({
   error: Error | null;
 }) {
   const [category, setCategory] = useState("All");
+  const [pendingDeleteVideoId, setPendingDeleteVideoId] = useState<
+    string | null
+  >(null);
   const selectVideo = useAppStore((state) => state.selectVideo);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -815,8 +817,12 @@ function LibraryScreen({
     mutationFn: deleteVideo,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: videoQueryKeys.all });
+      setPendingDeleteVideoId(null);
     },
   });
+  const pendingDeleteVideo = videos.find(
+    (video) => video.id === pendingDeleteVideoId,
+  );
   const filteredVideos = useMemo(
     () =>
       category === "All"
@@ -905,7 +911,7 @@ function LibraryScreen({
           ) : null}
           {filteredVideos.map((video) => (
             <StickerCard
-              className="cursor-pointer transition-transform hover:-translate-y-0.5"
+              className="animate-vidura-fade-in-up cursor-pointer transition-transform hover:-translate-y-0.5"
               key={video.id}
               onClick={() => {
                 selectVideo(video.id);
@@ -966,7 +972,7 @@ function LibraryScreen({
                           <DropdownMenuItem>Download subtitles</DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive"
-                            onClick={() => deleteVideoMutation.mutate(video.id)}
+                            onClick={() => setPendingDeleteVideoId(video.id)}
                           >
                             Delete video
                           </DropdownMenuItem>
@@ -1035,6 +1041,20 @@ function LibraryScreen({
           </MascotBubble>
         </aside>
       </div>
+      <ConfirmDialog
+        busy={deleteVideoMutation.isPending}
+        description={pendingDeleteVideo
+          ? `"${pendingDeleteVideo.title}" and its transcript, subtitles, notes, and chats will be permanently deleted.`
+          : undefined}
+        onCancel={() => setPendingDeleteVideoId(null)}
+        onConfirm={() => {
+          if (pendingDeleteVideoId) {
+            deleteVideoMutation.mutate(pendingDeleteVideoId);
+          }
+        }}
+        open={pendingDeleteVideoId !== null}
+        title="Delete this video?"
+      />
     </section>
   );
 }
@@ -1085,32 +1105,13 @@ function AddVideoScreen() {
     setSubmitStep("Preparing video...");
 
     try {
-      let segmentsForJob = transcriptSegments;
-      let devMetadata: {
-        title?: string;
-        channelTitle?: string;
-        thumbnailUrl?: string;
-      } = {};
-
-      if (import.meta.env.DEV && segmentsForJob.length === 0) {
-        setSubmitStep("Fetching transcript locally...");
-        const videoData = await fetchDevYouTubeVideoData(parsedUrl.videoId);
-        segmentsForJob = videoData.segments;
-        devMetadata = videoData.metadata;
-      }
-
-      if (import.meta.env.DEV && segmentsForJob.length === 0) {
-        throw new Error("No transcript segments were found for this video.");
-      }
-
+      // The backend fetches the transcript and metadata from YouTube during
+      // processing; we only pass segments when the user uploaded a file.
       setSubmitStep("Creating processing job...");
       const response = await createVideoJob({
         youtubeUrl: parsedUrl.canonicalUrl,
-        title: devMetadata.title,
-        channelTitle: devMetadata.channelTitle,
-        thumbnailUrl: devMetadata.thumbnailUrl,
         targetLanguage: "si-LK",
-        segments: segmentsForJob,
+        segments: transcriptSegments,
       });
 
       setSelectedVideoId(response.video.id);
@@ -1288,10 +1289,10 @@ function AddVideoScreen() {
           <Badge
             className={cn(
               "w-fit border-2 border-foreground",
-              hasSupabaseConfig ? "bg-vidura-mint" : "bg-vidura-sun"
+              isApiConfigured ? "bg-vidura-mint" : "bg-vidura-sun"
             )}
           >
-            {hasSupabaseConfig ? "Supabase configured" : "Local mock mode"}
+            {isApiConfigured ? "Connected to Vidura API" : "API not configured"}
           </Badge>
           <p className="mt-3 text-sm font-medium text-foreground/65">
             The UI is ready for Supabase Auth and Edge Functions. Add env vars
@@ -2335,7 +2336,7 @@ const NotesPanel = memo(function NotesPanel({
           <div className="flex max-h-[220px] flex-col gap-2 overflow-y-auto pr-2">
             {notes.map((note) => (
               <div
-                className="grid grid-cols-[56px_1fr_auto] items-start gap-3 rounded-md border-2 border-foreground bg-card p-3 shadow-[2px_2px_0_var(--vidura-ink)]"
+                className="grid animate-vidura-fade-in-up grid-cols-[56px_1fr_auto] items-start gap-3 rounded-md border-2 border-foreground bg-card p-3 shadow-[2px_2px_0_var(--vidura-ink)]"
                 key={note.id}
               >
                 <Badge className="border border-foreground bg-vidura-sun text-foreground">
@@ -2417,6 +2418,13 @@ const ChatPanel = memo(function ChatPanel({
   const isStreaming = pendingQuestion !== null;
   const isThinking = isStreaming && streamingAnswer.length === 0;
   const isLoadingHistory = chatQuery.isPending && Boolean(videoId || threadId);
+  // The edge function persists the user message immediately, so a realtime
+  // refetch can pull it into `messages` while we still show the optimistic
+  // pending bubble — that briefly duplicated it. Suppress the optimistic
+  // bubble once the persisted copy has landed.
+  const lastMessage = messages[messages.length - 1];
+  const showPendingBubble = pendingQuestion !== null &&
+    !(lastMessage?.role === "user" && lastMessage.content === pendingQuestion);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -2541,16 +2549,17 @@ const ChatPanel = memo(function ChatPanel({
           ) : null}
           {messages.map((message) => (
             <ChatBubble
+              animate
               content={message.content}
               key={message.id}
               role={message.role}
             />
           ))}
-          {pendingQuestion ? (
-            <ChatBubble content={pendingQuestion} role="user" />
+          {showPendingBubble ? (
+            <ChatBubble animate content={pendingQuestion ?? ""} role="user" />
           ) : null}
           {isThinking ? (
-            <div className="flex max-w-[88%] items-center gap-2 rounded-lg border-2 border-foreground bg-card p-3 text-sm font-bold text-foreground/65 shadow-[2px_2px_0_var(--vidura-ink)]">
+            <div className="flex max-w-[88%] animate-vidura-fade-in-up items-center gap-2 rounded-lg border-2 border-foreground bg-card p-3 text-sm font-bold text-foreground/65 shadow-[2px_2px_0_var(--vidura-ink)]">
               <Loader2Icon className="size-4 shrink-0 animate-spin" />
               Thinking...
             </div>
@@ -2646,10 +2655,12 @@ function ChatBubble({
   content,
   role,
   streaming = false,
+  animate = false,
 }: {
   content: string;
   role: "user" | "assistant";
   streaming?: boolean;
+  animate?: boolean;
 }) {
   return (
     <div
@@ -2658,6 +2669,7 @@ function ChatBubble({
         role === "user"
           ? "ml-auto whitespace-pre-wrap bg-vidura-purple"
           : "bg-card",
+        animate && "animate-vidura-fade-in-up",
       )}
     >
       {role === "assistant" ? (
@@ -2674,12 +2686,103 @@ function ChatBubble({
   );
 }
 
+// Sticker-styled confirmation dialog for destructive actions.
+function ConfirmDialog({
+  open,
+  title,
+  description,
+  confirmLabel = "Delete",
+  cancelLabel = "Cancel",
+  destructive = true,
+  busy = false,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  title: string;
+  description?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onCancel();
+      }
+    }
+
+    document.addEventListener("keydown", handleKey);
+
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [open, onCancel]);
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div
+        className="absolute inset-0 animate-vidura-fade-in bg-foreground/40"
+        onClick={busy ? undefined : onCancel}
+      />
+      <div
+        aria-modal="true"
+        className="relative w-full max-w-sm animate-vidura-scale-in rounded-lg border-2 border-foreground bg-card p-5 shadow-[6px_6px_0_var(--vidura-ink)]"
+        role="alertdialog"
+      >
+        <h2 className="font-display text-2xl font-black">{title}</h2>
+        {description ? (
+          <p className="mt-2 text-sm font-semibold text-foreground/65">
+            {description}
+          </p>
+        ) : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button
+            className="border-2 border-foreground"
+            disabled={busy}
+            onClick={onCancel}
+            variant="outline"
+          >
+            {cancelLabel}
+          </Button>
+          <Button
+            className={cn(
+              "border-2 border-foreground",
+              destructive
+                ? "bg-vidura-coral text-foreground hover:bg-vidura-coral/90"
+                : "bg-vidura-mint text-foreground hover:bg-vidura-mint/90",
+            )}
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? (
+              <Loader2Icon className="animate-spin" data-icon="inline-start" />
+            ) : null}
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Chat session history: pick a previous library chat to continue, rename it,
 // or delete it. Rendered from the mobile top bar and the desktop chat header.
 function ChatSessionsSheet({ trigger }: { trigger: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -2701,6 +2804,7 @@ function ChatSessionsSheet({ trigger }: { trigger: ReactNode }) {
     mutationFn: deleteChatSession,
     onSuccess: (_, deletedThreadId) => {
       void invalidateSessions();
+      setRemovingId(null);
 
       if (deletedThreadId === activeThreadId) {
         navigate("/chats");
@@ -2708,10 +2812,25 @@ function ChatSessionsSheet({ trigger }: { trigger: ReactNode }) {
     },
   });
   const sessions = sessionsQuery.data ?? [];
+  const pendingDeleteSession = sessions.find(
+    (session) => session.id === pendingDeleteId,
+  );
 
   function openSession(threadId: string) {
     setOpen(false);
     navigate(`/chats/session/${threadId}`);
+  }
+
+  function confirmDelete() {
+    if (!pendingDeleteId) {
+      return;
+    }
+
+    const id = pendingDeleteId;
+    setPendingDeleteId(null);
+    // Play the row's collapse animation before removing it from the list.
+    setRemovingId(id);
+    window.setTimeout(() => deleteMutation.mutate(id), 220);
   }
 
   function submitRename(threadId: string) {
@@ -2763,11 +2882,17 @@ function ChatSessionsSheet({ trigger }: { trigger: ReactNode }) {
           {sessions.map((session) => (
             <div
               className={cn(
-                "flex items-center gap-1 rounded-md border-2 border-foreground bg-card p-2 shadow-[2px_2px_0_var(--vidura-ink)]",
-                session.id === activeThreadId && "bg-vidura-mint",
+                "vidura-collapsible animate-vidura-fade-in-up",
+                removingId === session.id && "vidura-collapsible--removing",
               )}
               key={session.id}
             >
+              <div
+                className={cn(
+                  "flex items-center gap-1 rounded-md border-2 border-foreground bg-card p-2 shadow-[2px_2px_0_var(--vidura-ink)] transition-transform hover:-translate-y-0.5",
+                  session.id === activeThreadId && "bg-vidura-mint",
+                )}
+              >
               {renamingId === session.id ? (
                 <>
                   <InputGroup className="h-9 flex-1 border-2 border-foreground bg-background">
@@ -2837,7 +2962,7 @@ function ChatSessionsSheet({ trigger }: { trigger: ReactNode }) {
                   <Button
                     aria-label="Delete chat"
                     disabled={deleteMutation.isPending}
-                    onClick={() => deleteMutation.mutate(session.id)}
+                    onClick={() => setPendingDeleteId(session.id)}
                     size="icon-sm"
                     variant="ghost"
                   >
@@ -2845,10 +2970,21 @@ function ChatSessionsSheet({ trigger }: { trigger: ReactNode }) {
                   </Button>
                 </>
               )}
+              </div>
             </div>
           ))}
         </div>
       </SheetContent>
+      <ConfirmDialog
+        busy={deleteMutation.isPending}
+        description={pendingDeleteSession
+          ? `"${pendingDeleteSession.title}" and its messages will be permanently deleted.`
+          : undefined}
+        onCancel={() => setPendingDeleteId(null)}
+        onConfirm={confirmDelete}
+        open={pendingDeleteId !== null}
+        title="Delete this chat?"
+      />
     </Sheet>
   );
 }
@@ -2947,6 +3083,7 @@ function ChatScreen() {
 function VideoInfoPanel({ video }: { video: LibraryVideo }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const deleteVideoMutation = useMutation({
     mutationFn: deleteVideo,
     onSuccess: () => {
@@ -3037,13 +3174,21 @@ function VideoInfoPanel({ video }: { video: LibraryVideo }) {
         <Button
           className="justify-start border-2 border-foreground"
           disabled={deleteVideoMutation.isPending}
-          onClick={() => deleteVideoMutation.mutate(video.id)}
+          onClick={() => setConfirmDelete(true)}
           variant="outline"
         >
           <Trash2Icon data-icon="inline-start" />
           Delete video
         </Button>
       </div>
+      <ConfirmDialog
+        busy={deleteVideoMutation.isPending}
+        description={`"${video.title}" and its transcript, subtitles, notes, and chats will be permanently deleted.`}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => deleteVideoMutation.mutate(video.id)}
+        open={confirmDelete}
+        title="Delete this video?"
+      />
     </StickerPanel>
   );
 }

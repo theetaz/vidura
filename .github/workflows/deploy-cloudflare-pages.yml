@@ -24,8 +24,8 @@ jobs:
 
       - name: Build
         env:
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          # Self-hosted Vidura API (Cloudflare-proxied). Public, not a secret.
+          VITE_API_URL: https://vidura-api.nipuntheekshana.com
         run: bun run build
 
       - name: Deploy to Cloudflare Pages

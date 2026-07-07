@@ -1,106 +1,53 @@
-import { useEffect, useState } from "react";
-import type { Session, User } from "@supabase/supabase-js";
-import { hasSupabaseConfig, supabase } from "@/lib/supabase";
+import { authClient } from "@/lib/auth-client";
+import { isApiConfigured } from "@/lib/api";
 
-const devAuthEmail = "vidura-dev@local.test";
-const devAuthPassword = "vidura-dev-password-2026";
-const devAuthEnabled = import.meta.env.DEV &&
-  import.meta.env.VITE_DISABLE_DEV_AUTH !== "true";
+export type SessionUser = {
+  id: string;
+  email: string | null;
+  name?: string | null;
+  image?: string | null;
+  user_metadata?: { full_name?: string; name?: string; avatar_url?: string };
+};
 
 type AuthState = {
   configured: boolean;
   loading: boolean;
-  session: Session | null;
-  user: User | null;
+  session: unknown;
+  user: SessionUser | null;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 };
 
 export function useAuth(): AuthState {
-  const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(() => Boolean(supabase));
-
-  useEffect(() => {
-    if (!supabase) {
-      return;
+  const { data: session, isPending } = authClient.useSession();
+  const sessionUser = session?.user
+    ? {
+      id: session.user.id,
+      email: session.user.email ?? null,
+      name: session.user.name ?? null,
+      image: session.user.image ?? null,
+      // Keep the shape App.tsx already reads for display names/avatars.
+      user_metadata: {
+        full_name: session.user.name ?? undefined,
+        name: session.user.name ?? undefined,
+        avatar_url: session.user.image ?? undefined,
+      },
     }
-
-    const client = supabase;
-    let mounted = true;
-
-    client.auth.getSession().then(({ data }) => {
-      if (!mounted) {
-        return;
-      }
-
-      if (devAuthEnabled && !data.session) {
-        void client.auth
-          .signInWithPassword({
-            email: devAuthEmail,
-            password: devAuthPassword,
-          })
-          .then(({ data: signInData, error }) => {
-            if (!mounted) {
-              return;
-            }
-
-            if (error) {
-              console.error("Dev auto sign-in failed", error.message);
-              setSession(null);
-              setLoading(false);
-              return;
-            }
-
-            setSession(signInData.session);
-            setLoading(false);
-          });
-        return;
-      }
-
-      setSession(data.session);
-      setLoading(false);
-    });
-
-    const {
-      data: { subscription },
-    } = client.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      setLoading(false);
-    });
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, []);
+    : null;
 
   return {
-    configured: hasSupabaseConfig,
-    loading,
-    session,
-    user: session?.user ?? null,
+    configured: isApiConfigured,
+    loading: isPending,
+    session: session ?? null,
+    user: sessionUser,
     signInWithGoogle: async () => {
-      if (!supabase) {
-        throw new Error("Supabase is not configured.");
-      }
-
-      const { error } = await supabase.auth.signInWithOAuth({
+      await authClient.signIn.social({
         provider: "google",
-        options: {
-          redirectTo: window.location.origin,
-        },
+        callbackURL: window.location.origin,
       });
-
-      if (error) {
-        throw error;
-      }
     },
     signOut: async () => {
-      if (!supabase) {
-        return;
-      }
-
-      await supabase.auth.signOut();
+      await authClient.signOut();
     },
   };
 }
