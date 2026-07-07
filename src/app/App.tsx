@@ -409,17 +409,16 @@ function useStaleJobRecovery(videos: LibraryVideo[] | undefined) {
   }, [videos, queryClient]);
 }
 
-function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {
-  return videos?.some((video) => {
-    const jobStatus = video.latestJob?.status;
+function isVideoFailed(video: LibraryVideo | null | undefined) {
+  return video?.status === "failed" || video?.latestJob?.status === "failed";
+}
 
-    return video.status !== "ready" || jobStatus === "queued" ||
-      jobStatus === "running";
-  }) ?? false;
+function hasActiveVideoJob(videos: LibraryVideo[] | undefined) {
+  return videos?.some(isVideoStillProcessing) ?? false;
 }
 
 function isVideoStillProcessing(video: LibraryVideo | null | undefined) {
-  if (!video) {
+  if (!video || isVideoFailed(video)) {
     return false;
   }
 
@@ -752,7 +751,7 @@ function DesktopSidebar() {
               </div>
             </div>
             <p className="text-xs font-semibold leading-snug text-foreground/65">
-              Library updates live from Supabase.
+              Your library updates live.
             </p>
           </div>
           {auth.configured && auth.user ? (
@@ -959,20 +958,22 @@ function LibraryScreen({
                           <span className="sr-only">Open video menu</span>
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                      <DropdownMenuContent
+                        align="end"
+                        onClick={(event) => event.stopPropagation()}
+                      >
                         <DropdownMenuGroup>
                           <DropdownMenuItem
-                            onClick={() => {
+                            onSelect={() => {
                               selectVideo(video.id);
                               navigate(`/watch/${video.id}`);
                             }}
                           >
                             Open video
                           </DropdownMenuItem>
-                          <DropdownMenuItem>Download subtitles</DropdownMenuItem>
                           <DropdownMenuItem
                             className="text-destructive"
-                            onClick={() => setPendingDeleteVideoId(video.id)}
+                            onSelect={() => setPendingDeleteVideoId(video.id)}
                           >
                             Delete video
                           </DropdownMenuItem>
@@ -982,7 +983,11 @@ function LibraryScreen({
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-foreground/65">
                     <Badge variant="secondary">{video.category}</Badge>
-                    {isVideoStillProcessing(video) ? (
+                    {isVideoFailed(video) ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-md border border-foreground bg-vidura-coral px-2 py-1 text-foreground">
+                        Failed
+                      </span>
+                    ) : isVideoStillProcessing(video) ? (
                       <span className="inline-flex items-center gap-1.5 rounded-md border border-foreground bg-vidura-sun px-2 py-1 text-foreground">
                         <Loader2Icon className="size-3.5 animate-spin" />
                         {video.latestJob?.status ?? video.status}
@@ -990,21 +995,27 @@ function LibraryScreen({
                     ) : (
                       <span>{video.latestJob?.status ?? video.status}</span>
                     )}
-                    <span>
-                      {(video.latestJob?.metadata.stage as string | undefined) ??
-                        "created"}
-                    </span>
+                    {isVideoFailed(video) ? null : (
+                      <span>
+                        {(video.latestJob?.metadata.stage as string | undefined) ??
+                          "created"}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <Badge
                   className={cn(
                     "w-fit border-2 border-foreground",
-                    video.status === "ready"
+                    isVideoFailed(video)
+                      ? "bg-vidura-coral text-foreground"
+                      : video.status === "ready"
                       ? "bg-vidura-mint text-foreground"
                       : "bg-vidura-sun text-foreground"
                   )}
                 >
-                  {isVideoStillProcessing(video) ? (
+                  {isVideoFailed(video) ? (
+                    "Failed"
+                  ) : isVideoStillProcessing(video) ? (
                     <span className="inline-flex items-center gap-1.5">
                       <Loader2Icon className="size-3.5 animate-spin" />
                       {video.progress}
@@ -1295,8 +1306,8 @@ function AddVideoScreen() {
             {isApiConfigured ? "Connected to Vidura API" : "API not configured"}
           </Badge>
           <p className="mt-3 text-sm font-medium text-foreground/65">
-            The UI is ready for Supabase Auth and Edge Functions. Add env vars
-            when backend wiring starts.
+            If a video can't fetch its transcript automatically, import a
+            transcript file above and it will be translated the same way.
           </p>
         </StickerPanel>
       </div>
@@ -1412,18 +1423,22 @@ function ProcessingScreen({
 function SubtitleCaption({
   activeSubtitle,
   subtitlesStillLoading,
+  failed = false,
   subtitleOpacity,
   subtitleSize,
   variant,
 }: {
   activeSubtitle: TranscriptSegment | null;
   subtitlesStillLoading: boolean;
+  failed?: boolean;
   subtitleOpacity: number;
   subtitleSize: number;
   variant: SubtitlePlacement;
 }) {
   const content = activeSubtitle?.sinhala ? (
     activeSubtitle.sinhala
+  ) : failed ? (
+    "Subtitles couldn't be generated for this video."
   ) : subtitlesStillLoading ? (
     <span className="inline-flex items-center justify-center gap-2">
       <Loader2Icon className="size-4 shrink-0 animate-spin" />
@@ -1490,9 +1505,9 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
     refetchInterval: isVideoStillProcessing(selectedVideo) ? 5_000 : false,
   });
   const selectedTranscript = transcriptQuery.data ?? [];
-  const subtitlesStillLoading = transcriptQuery.isPending ||
-    transcriptQuery.isFetching ||
-    isVideoStillProcessing(selectedVideo);
+  const videoFailed = isVideoFailed(selectedVideo);
+  const subtitlesStillLoading = !videoFailed &&
+    (transcriptQuery.isPending || isVideoStillProcessing(selectedVideo));
   const showOverlaySubtitles = isImmersive || subtitlePlacement === "overlay";
   const showBelowSubtitles = !isImmersive && subtitlePlacement === "below";
   const currentPlaybackMs = playbackTime.videoId === selectedVideo?.id
@@ -1652,6 +1667,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             {subtitleEnabled && showOverlaySubtitles ? (
               <SubtitleCaption
                 activeSubtitle={activeSubtitle}
+                failed={videoFailed}
                 subtitleOpacity={subtitleOpacity}
                 subtitleSize={subtitleSize}
                 subtitlesStillLoading={subtitlesStillLoading}
@@ -1672,6 +1688,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
         {subtitleEnabled && showBelowSubtitles ? (
           <SubtitleCaption
             activeSubtitle={activeSubtitle}
+            failed={videoFailed}
             subtitleOpacity={subtitleOpacity}
             subtitleSize={subtitleSize}
             subtitlesStillLoading={subtitlesStillLoading}
@@ -1681,6 +1698,8 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
         <div className="grid gap-4 xl:hidden">
           <TranscriptPanel
             activeSegmentId={activeSubtitle?.id ?? null}
+            failed={videoFailed}
+            errorMessage={selectedVideo.latestJob?.errorMessage ?? null}
             isProcessing={isVideoStillProcessing(selectedVideo)}
             videoId={selectedVideo.id}
           />
@@ -1692,6 +1711,8 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
         <div className="hidden flex-col gap-4 xl:flex">
           <TranscriptPanel
             activeSegmentId={activeSubtitle?.id ?? null}
+            failed={videoFailed}
+            errorMessage={selectedVideo.latestJob?.errorMessage ?? null}
             isProcessing={isVideoStillProcessing(selectedVideo)}
             videoId={selectedVideo.id}
           />
@@ -2000,10 +2021,14 @@ function YouTubePlayerFrame({
 const TranscriptPanel = memo(function TranscriptPanel({
   activeSegmentId,
   isProcessing = false,
+  failed = false,
+  errorMessage = null,
   videoId,
 }: {
   activeSegmentId?: string | null;
   isProcessing?: boolean;
+  failed?: boolean;
+  errorMessage?: string | null;
   videoId: string;
 }) {
   const queryClient = useQueryClient();
@@ -2136,7 +2161,19 @@ const TranscriptPanel = memo(function TranscriptPanel({
         </CardHeader>
         {collapsed ? null : (
         <CardContent>
-          {!isLoading && !isRegenerating && selectedTranscript.length === 0 ? (
+          {failed && selectedTranscript.length === 0 ? (
+            <div className="rounded-md border-2 border-foreground bg-vidura-coral/25 p-4">
+              <p className="text-sm font-black">Processing failed</p>
+              <p className="mt-1 text-sm font-semibold text-foreground/70">
+                {errorMessage?.includes("transcript") ||
+                    errorMessage?.includes("caption")
+                  ? "Couldn't fetch this video's transcript from YouTube. You can import a transcript file from the Add screen, or try Regenerate transcript."
+                  : errorMessage ?? "Something went wrong while processing this video."}
+              </p>
+            </div>
+          ) : null}
+          {!failed && !isLoading && !isRegenerating &&
+              selectedTranscript.length === 0 ? (
             <p className="text-sm font-black text-foreground/60">
               Transcript lines will appear here as processing stores them.
             </p>

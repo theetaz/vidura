@@ -263,6 +263,7 @@ function mapVideo(video: VideoDTO): LibraryVideo {
 function mapVideoStatus(status: VideoDTO["status"]): Video["status"] {
   if (status === "ready") return "ready";
   if (status === "queued") return "queued";
+  if (status === "failed") return "failed";
   return "processing";
 }
 

@@ -1,6 +1,18 @@
 // YouTube URL parsing, metadata, and transcript extraction — ported from the
 // Supabase edge functions. Runs on Bun/Node with global fetch.
 
+import { env } from "../env.ts";
+
+// All YouTube requests go through this so an optional residential proxy can be
+// applied (YouTube blocks datacenter IPs). Bun's fetch supports a `proxy`
+// option; when unset the request is direct.
+function ytFetch(url: string, init?: RequestInit): Promise<Response> {
+  const withProxy = env.youtubeProxyUrl
+    ? { ...init, proxy: env.youtubeProxyUrl }
+    : init;
+  return fetch(url, withProxy as RequestInit);
+}
+
 export type ParsedYouTubeUrl = {
   videoId: string;
   canonicalUrl: string;
@@ -84,7 +96,7 @@ export async function fetchYouTubeMetadata(
     thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
   };
 
-  const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+  const response = await ytFetch(`https://www.youtube.com/watch?v=${videoId}`, {
     headers: {
       "Accept-Language": "en-US,en;q=0.9",
       "User-Agent":
@@ -143,7 +155,11 @@ async function fetchTranscriptLines(videoId: string): Promise<TranscriptLine[]> 
   const track = chooseCaptionTrack(tracks, "en");
 
   if (!track?.baseUrl) {
-    throw new Error(`No English transcript is available for ${videoId}`);
+    // No caption tracks usually means YouTube blocked this (datacenter) IP
+    // rather than the video genuinely lacking captions.
+    throw new Error(
+      `Couldn't fetch a transcript for ${videoId} — YouTube returned no caption tracks (the server IP may be blocked). Import a transcript file instead, or configure YOUTUBE_PROXY_URL.`,
+    );
   }
 
   const transcriptXml = await fetchCaptionXml(track.baseUrl);
@@ -157,7 +173,7 @@ async function fetchTranscriptLines(videoId: string): Promise<TranscriptLine[]> 
 }
 
 async function fetchCaptionTracks(videoId: string): Promise<CaptionTrack[]> {
-  const innerTubeResponse = await fetch(
+  const innerTubeResponse = await ytFetch(
     "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
     {
       method: "POST",
@@ -180,7 +196,7 @@ async function fetchCaptionTracks(videoId: string): Promise<CaptionTrack[]> {
     if (Array.isArray(tracks) && tracks.length > 0) return tracks;
   }
 
-  const webResponse = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+  const webResponse = await ytFetch(`https://www.youtube.com/watch?v=${videoId}`, {
     headers: {
       "Accept-Language": "en-US,en;q=0.9",
       "User-Agent":
@@ -210,7 +226,7 @@ function chooseCaptionTrack(tracks: CaptionTrack[], preferredLanguage: string) {
 }
 
 async function fetchCaptionXml(baseUrl: string) {
-  const response = await fetch(baseUrl, {
+  const response = await ytFetch(baseUrl, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)",

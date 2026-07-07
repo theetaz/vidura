@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { LanguagesIcon } from "lucide-react";
 
-export type VideoStatus = "ready" | "processing" | "queued";
+export type VideoStatus = "ready" | "processing" | "queued" | "failed";
 
 export type Video = {
   id: string;
