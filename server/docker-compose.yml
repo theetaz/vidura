@@ -42,12 +42,23 @@ services:
       DATABASE_URL: postgres://vidura:${POSTGRES_PASSWORD}@postgres:5432/vidura
       # Drop a Netscape-format cookies.txt here to bypass YouTube's bot wall.
       YOUTUBE_COOKIES_FILE: /cookies/youtube.txt
+      # Open-source PO-token provider (BotGuard proof-of-origin) — lets yt-dlp
+      # pass YouTube's bot wall from a datacenter IP without cookies/proxies.
+      POT_PROVIDER_URL: http://bgutil-pot:4416
     volumes:
       - ./cookies:/cookies:ro
     depends_on:
       postgres:
         condition: service_healthy
+      bgutil-pot:
+        condition: service_started
     command: ["bun", "run", "src/worker.ts"]
+
+  # https://github.com/Brainicism/bgutil-ytdlp-pot-provider — internal only.
+  bgutil-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+    init: true
 
 volumes:
   vidura-pgdata:

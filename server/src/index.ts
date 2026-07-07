@@ -8,6 +8,7 @@ import { notes } from "./routes/notes.ts";
 import { settings } from "./routes/settings.ts";
 import { chat } from "./routes/chat.ts";
 import { realtime } from "./routes/realtime.ts";
+import { ingest } from "./routes/ingest.ts";
 
 const app = new Hono();
 
@@ -39,6 +40,25 @@ app.route("/api/notes", notes);
 app.route("/api/settings", settings);
 app.route("/api/chat", chat);
 app.route("/api/realtime", realtime);
+app.route("/api/ingest", ingest);
+
+// Serve the browser transcript userscript with the live API base injected, so
+// Tampermonkey can install and auto-update it. Not CORS-restricted (fetched
+// directly by the userscript manager, not by page JS).
+app.get("/transcript-helper.user.js", async (c) => {
+  const base = env.apiBaseUrl.replace(/\/$/, "");
+  let host = "vidura-api.nipuntheekshana.com";
+  try { host = new URL(base).host; } catch { /* keep default */ }
+  const source = await Bun.file(
+    new URL("../public/transcript-helper.user.js", import.meta.url),
+  ).text();
+  const body = source
+    .replaceAll("__API_BASE__", base)
+    .replaceAll("__API_HOST__", host);
+  return new Response(body, {
+    headers: { "Content-Type": "application/javascript; charset=utf-8" },
+  });
+});
 
 // Explicit Bun.serve so idleTimeout is honored — SSE streams (chat + realtime)
 // must outlive Bun's default 10s idle timeout. 255s is Bun's max, comfortably

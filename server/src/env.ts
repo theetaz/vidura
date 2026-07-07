@@ -32,6 +32,10 @@ export const env = {
   // from a logged-in YouTube session let yt-dlp bypass the bot wall on a
   // flagged datacenter IP. Used only when the file exists.
   youtubeCookiesFile: optional("YOUTUBE_COOKIES_FILE"),
+  // Open-source bgutil PO-token provider (sidecar container). Supplies
+  // BotGuard proof-of-origin tokens so yt-dlp passes YouTube's bot wall from
+  // a datacenter IP without cookies or proxies.
+  potProviderUrl: optional("POT_PROVIDER_URL"),
   // Official Google APIs (recommended): Gemini ingests public YouTube URLs on
   // Google's own infrastructure for transcription, and the YouTube Data API
   // serves exact metadata. One Cloud Console API key can serve both when the

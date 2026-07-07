@@ -68,17 +68,22 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
       });
 
       const uploaded = normalizeSegments(data.segments);
-      // One yt-dlp call fetches both metadata and the transcript. When the
-      // user uploaded their own transcript, only metadata is needed.
+      // When the client supplies the transcript (browser userscript or file
+      // upload), it also supplies the metadata, already written to the video
+      // row at ingest time — so no YouTube network call is made at all (the
+      // VPS IP is blocked by YouTube). A null-metadata object below keeps the
+      // existing row values via coalesce. Otherwise, one yt-dlp call fetches
+      // both metadata and the transcript.
       const ytData = uploaded.length > 0
         ? null
         : await fetchYouTubeVideoData(video.youtube_video_id);
-      const metadata = ytData?.metadata ??
-        await fetchYouTubeMetadata(video.youtube_video_id);
+      const metadata = ytData?.metadata ?? (uploaded.length > 0
+        ? { title: null, channelTitle: null, durationMs: null, thumbnailUrl: null }
+        : await fetchYouTubeMetadata(video.youtube_video_id));
 
       await sql`
         update videos set
-          thumbnail_url = coalesce(${metadata.thumbnailUrl},
+          thumbnail_url = coalesce(${metadata.thumbnailUrl}, thumbnail_url,
             ${"https://i.ytimg.com/vi/" + video.youtube_video_id + "/hqdefault.jpg"}),
           title = coalesce(${metadata.title}, title),
           channel_title = coalesce(${metadata.channelTitle}, channel_title),

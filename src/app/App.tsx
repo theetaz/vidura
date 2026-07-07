@@ -43,6 +43,7 @@ import {
   MenuIcon,
   Minimize2Icon,
   MessageCircleIcon,
+  CopyIcon,
   MoreHorizontalIcon,
   NotebookPenIcon,
   PauseIcon,
@@ -148,7 +149,8 @@ import {
   quickPrompts,
   type TranscriptSegment,
 } from "@/features/videos/data";
-import { isApiConfigured } from "@/lib/api";
+import { Input } from "@/components/ui/input";
+import { api, apiBaseUrl, isApiConfigured } from "@/lib/api";
 import { parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import {
@@ -3340,8 +3342,118 @@ function SettingsScreen() {
           </FieldSet>
         </FieldGroup>
       </StickerPanel>
+      <TranscriptHelperPanel />
       <ChatSettingsPanel />
     </section>
+  );
+}
+
+function TranscriptHelperPanel() {
+  const queryClient = useQueryClient();
+  const tokenQuery = useQuery({
+    queryKey: ["ingest-token"],
+    queryFn: () => api.get<{ token: string | null }>("/api/ingest/token"),
+  });
+  const rotateMutation = useMutation({
+    mutationFn: () => api.post<{ token: string | null }>("/api/ingest/token/rotate"),
+    onSuccess: (data) => queryClient.setQueryData(["ingest-token"], data),
+  });
+  const [copied, setCopied] = useState(false);
+
+  const token = tokenQuery.data?.token ?? "";
+  const scriptUrl = `${apiBaseUrl}/transcript-helper.user.js`;
+
+  async function copyToken() {
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+
+  return (
+    <StickerPanel
+      description="Add YouTube videos from your own browser — bypasses YouTube's server blocks, no proxies or logins needed."
+      title="Browser transcript helper"
+    >
+      <FieldGroup>
+        <FieldSet>
+          <FieldTitle>How it works</FieldTitle>
+          <FieldDescription>
+            YouTube blocks transcript downloads from servers, but not from your
+            browser. This one-time helper reads a video's captions right in your
+            browser and sends them here to be translated. Install it once, then
+            click <strong>Send to Vidura</strong> on any YouTube watch page.
+          </FieldDescription>
+        </FieldSet>
+
+        <FieldSet>
+          <FieldTitle>1. Install a userscript manager</FieldTitle>
+          <FieldDescription>
+            Install the free{" "}
+            <a
+              className="font-bold underline"
+              href="https://www.tampermonkey.net/"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Tampermonkey
+            </a>{" "}
+            browser extension (Chrome, Edge, Firefox, Safari) if you don't have
+            one already.
+          </FieldDescription>
+        </FieldSet>
+
+        <FieldSet>
+          <FieldTitle>2. Install the Vidura helper</FieldTitle>
+          <FieldDescription>
+            Open the link below — Tampermonkey will offer to install it. It
+            auto-updates from here.
+          </FieldDescription>
+          <a href={scriptUrl} rel="noreferrer" target="_blank">
+            <CartoonButton type="button">
+              <LinkIcon data-icon="inline-start" />
+              Install transcript helper
+            </CartoonButton>
+          </a>
+        </FieldSet>
+
+        <FieldSet>
+          <FieldTitle>3. Paste your token when asked</FieldTitle>
+          <FieldDescription>
+            The first time you click <strong>Send to Vidura</strong>, paste this
+            personal token so it knows to send videos to your library. Keep it
+            private.
+          </FieldDescription>
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-11 border-2 border-foreground bg-card font-mono text-sm"
+              readOnly
+              value={tokenQuery.isPending ? "Loading…" : token}
+            />
+            <Button
+              className="h-11 shrink-0 border-2 border-foreground bg-card"
+              onClick={copyToken}
+              type="button"
+              variant="outline"
+            >
+              {copied ? <CheckIcon /> : <CopyIcon />}
+            </Button>
+          </div>
+          <button
+            className="mt-1 self-start text-sm font-bold text-foreground/60 underline"
+            disabled={rotateMutation.isPending}
+            onClick={() => rotateMutation.mutate()}
+            type="button"
+          >
+            {rotateMutation.isPending ? "Generating…" : "Generate a new token"}
+          </button>
+        </FieldSet>
+      </FieldGroup>
+    </StickerPanel>
   );
 }
 

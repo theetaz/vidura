@@ -271,6 +271,14 @@ async function runYtDlp(
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
   const fullArgs = [...args];
+  // bgutil PO-token provider: BotGuard proof-of-origin tokens that pass the
+  // bot wall from datacenter IPs without cookies or proxies.
+  if (env.potProviderUrl) {
+    fullArgs.unshift(
+      "--extractor-args",
+      `youtubepot-bgutilhttp:base_url=${env.potProviderUrl}`,
+    );
+  }
   // Cookies from a logged-in session bypass YouTube's bot wall on flagged IPs.
   if (env.youtubeCookiesFile && existsSync(env.youtubeCookiesFile)) {
     fullArgs.unshift("--cookies", env.youtubeCookiesFile);
