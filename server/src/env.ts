@@ -30,7 +30,10 @@ export const env = {
   // Console API key can serve both when "Generative Language API" and "YouTube
   // Data API v3" are enabled on the project.
   geminiApiKey: optional("GEMINI_API_KEY"),
-  geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash-lite"),
+  // gemini-2.5-flash gives subtitle-grade timestamps (±~3s across a 10-min
+  // video). flash-lite is cheaper but its timestamps drift badly on longer
+  // videos (±100s+), and pro is both slower and less accurate here.
+  geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash"),
   youtubeApiKey: optional("YOUTUBE_API_KEY"),
   // Email/password is a local-testing convenience; production uses Google only.
   emailPasswordAuth: optional("AUTH_EMAIL_PASSWORD", "false") === "true",
