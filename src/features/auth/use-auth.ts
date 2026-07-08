@@ -15,6 +15,13 @@ type AuthState = {
   session: unknown;
   user: SessionUser | null;
   signInWithGoogle: () => Promise<void>;
+  // Email/password is a local-dev convenience (backend gate: AUTH_EMAIL_PASSWORD).
+  signInWithEmail: (email: string, password: string) => Promise<void>;
+  signUpWithEmail: (
+    email: string,
+    password: string,
+    name: string,
+  ) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -45,6 +52,14 @@ export function useAuth(): AuthState {
         provider: "google",
         callbackURL: window.location.origin,
       });
+    },
+    signInWithEmail: async (email, password) => {
+      const res = await authClient.signIn.email({ email, password });
+      if (res.error) throw new Error(res.error.message ?? "Sign in failed");
+    },
+    signUpWithEmail: async (email, password, name) => {
+      const res = await authClient.signUp.email({ email, password, name });
+      if (res.error) throw new Error(res.error.message ?? "Sign up failed");
     },
     signOut: async () => {
       await authClient.signOut();

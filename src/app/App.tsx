@@ -158,7 +158,12 @@ import {
   isYouTubeVideoId,
   parseYouTubeUrl,
 } from "@/lib/youtube";
-import { useAppStore, type AppView, type SubtitlePlacement } from "@/stores/app-store";
+import {
+  hexToRgbChannels,
+  useAppStore,
+  type AppView,
+  type SubtitlePlacement,
+} from "@/stores/app-store";
 import {
   CartoonButton,
   MascotBubble,
@@ -430,6 +435,44 @@ function isVideoStillProcessing(video: LibraryVideo | null | undefined) {
     jobStatus === "running";
 }
 
+// Human-readable "1 hour ago" / "3 days ago".
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const diffSec = Math.round((then - Date.now()) / 1000);
+  const abs = Math.abs(diffSec);
+  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  if (abs < 45) return "just now";
+  if (abs < 3600) return rtf.format(Math.round(diffSec / 60), "minute");
+  if (abs < 86_400) return rtf.format(Math.round(diffSec / 3600), "hour");
+  if (abs < 2_592_000) return rtf.format(Math.round(diffSec / 86_400), "day");
+  if (abs < 31_536_000) {
+    return rtf.format(Math.round(diffSec / 2_592_000), "month");
+  }
+  return rtf.format(Math.round(diffSec / 31_536_000), "year");
+}
+
+// A single status pill: Failed / Running · N% / Ready / Queued.
+function VideoStatusPill({ video }: { video: LibraryVideo }) {
+  const base =
+    "inline-flex items-center gap-1.5 rounded-md border-2 border-foreground px-2 py-0.5 text-xs font-bold text-foreground";
+  if (isVideoFailed(video)) {
+    return <span className={cn(base, "bg-vidura-coral")}>Failed</span>;
+  }
+  if (isVideoStillProcessing(video)) {
+    return (
+      <span className={cn(base, "bg-vidura-sun")}>
+        <Loader2Icon className="size-3.5 animate-spin" />
+        Running · {video.latestJob?.progress ?? 0}%
+      </span>
+    );
+  }
+  if (video.status === "ready") {
+    return <span className={cn(base, "bg-vidura-mint")}>Ready</span>;
+  }
+  return <span className={cn(base, "bg-card")}>Queued</span>;
+}
+
 function InlineLoadingNotice({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 text-sm font-black text-foreground/65">
@@ -513,10 +556,76 @@ function AuthScreen({
               {submitting ? "Opening Google..." : "Continue with Google"}
               <ChevronRightIcon data-icon="inline-end" />
             </CartoonButton>
+            {import.meta.env.DEV ? <DevEmailAuth onError={setError} /> : null}
           </div>
         </CardContent>
       </StickerCard>
     </main>
+  );
+}
+
+// Local-dev only: email/password sign-in so you can test without Google OAuth.
+// Never rendered in production builds (import.meta.env.DEV is false there).
+function DevEmailAuth({ onError }: { onError: (message: string) => void }) {
+  const { signInWithEmail, signUpWithEmail } = useAuth();
+  const [email, setEmail] = useState("dev@vidura.local");
+  const [password, setPassword] = useState("devpassword123");
+  const [busy, setBusy] = useState(false);
+
+  async function run(mode: "in" | "up") {
+    setBusy(true);
+    onError("");
+    try {
+      if (mode === "up") {
+        await signUpWithEmail(email, password, email.split("@")[0] ?? "Dev");
+      } else {
+        await signInWithEmail(email, password);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Auth failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-col gap-2 rounded-lg border-2 border-dashed border-foreground/40 p-3">
+      <p className="text-xs font-bold uppercase text-foreground/50">
+        Dev login (local only)
+      </p>
+      <Input
+        className="h-10 border-2 border-foreground bg-card"
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="email"
+        value={email}
+      />
+      <Input
+        className="h-10 border-2 border-foreground bg-card"
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="password"
+        type="password"
+        value={password}
+      />
+      <div className="flex gap-2">
+        <Button
+          className="flex-1 border-2 border-foreground bg-card"
+          disabled={busy}
+          onClick={() => run("up")}
+          type="button"
+          variant="outline"
+        >
+          Sign up
+        </Button>
+        <Button
+          className="flex-1 border-2 border-foreground bg-vidura-mint"
+          disabled={busy}
+          onClick={() => run("in")}
+          type="button"
+        >
+          Sign in
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -919,7 +1028,7 @@ function LibraryScreen({
                 navigate(`/watch/${video.id}`);
               }}
             >
-              <CardContent className="grid gap-3 p-3 sm:grid-cols-[164px_1fr_auto] sm:items-center">
+              <CardContent className="grid gap-3 p-3 sm:grid-cols-[164px_1fr] sm:items-center">
                 <div
                   className={cn(
                     "relative flex aspect-video items-center justify-center overflow-hidden rounded-md border-2 border-foreground text-foreground",
@@ -939,15 +1048,22 @@ function LibraryScreen({
                     {video.duration}
                   </Badge>
                 </div>
-                <div className="min-w-0">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-base font-black leading-tight sm:text-lg">
-                        {video.title}
-                      </h3>
-                      <p className="mt-1 text-sm font-medium text-foreground/60">
-                        {video.channel}
-                      </p>
+                <div className="flex min-w-0 flex-col gap-2.5">
+                  <div>
+                    <h3 className="line-clamp-2 text-base font-black leading-tight sm:text-lg">
+                      {video.title}
+                    </h3>
+                    <p className="mt-1 truncate text-sm font-medium text-foreground/60">
+                      {video.channel}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                      <VideoStatusPill video={video} />
+                      <span className="inline-flex items-center gap-1 text-xs font-bold text-foreground/50">
+                        <ClockIcon className="size-3.5" />
+                        {formatRelativeTime(video.createdAt)}
+                      </span>
                     </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -983,49 +1099,7 @@ function LibraryScreen({
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold text-foreground/65">
-                    <Badge variant="secondary">{video.category}</Badge>
-                    {isVideoFailed(video) ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-md border border-foreground bg-vidura-coral px-2 py-1 text-foreground">
-                        Failed
-                      </span>
-                    ) : isVideoStillProcessing(video) ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-md border border-foreground bg-vidura-sun px-2 py-1 text-foreground">
-                        <Loader2Icon className="size-3.5 animate-spin" />
-                        {video.latestJob?.status ?? video.status}
-                      </span>
-                    ) : (
-                      <span>{video.latestJob?.status ?? video.status}</span>
-                    )}
-                    {isVideoFailed(video) ? null : (
-                      <span>
-                        {(video.latestJob?.metadata.stage as string | undefined) ??
-                          "created"}
-                      </span>
-                    )}
-                  </div>
                 </div>
-                <Badge
-                  className={cn(
-                    "w-fit border-2 border-foreground",
-                    isVideoFailed(video)
-                      ? "bg-vidura-coral text-foreground"
-                      : video.status === "ready"
-                      ? "bg-vidura-mint text-foreground"
-                      : "bg-vidura-sun text-foreground"
-                  )}
-                >
-                  {isVideoFailed(video) ? (
-                    "Failed"
-                  ) : isVideoStillProcessing(video) ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                      {video.progress}
-                    </span>
-                  ) : (
-                    video.progress
-                  )}
-                </Badge>
               </CardContent>
             </StickerCard>
           ))}
@@ -1428,6 +1502,9 @@ function SubtitleCaption({
   failed = false,
   subtitleOpacity,
   subtitleSize,
+  subtitleTextColor,
+  subtitleBgColor,
+  subtitlePosition = 6,
   variant,
 }: {
   activeSubtitle: TranscriptSegment | null;
@@ -1435,6 +1512,9 @@ function SubtitleCaption({
   failed?: boolean;
   subtitleOpacity: number;
   subtitleSize: number;
+  subtitleTextColor: string;
+  subtitleBgColor: string;
+  subtitlePosition?: number;
   variant: SubtitlePlacement;
 }) {
   const content = activeSubtitle?.sinhala ? (
@@ -1453,9 +1533,12 @@ function SubtitleCaption({
   if (variant === "overlay") {
     return (
       <div
-        className="pointer-events-none absolute inset-x-3 bottom-3 z-10 mx-auto max-w-[min(88%,720px)] rounded-md border-2 border-white px-2.5 py-1.5 text-center font-black leading-tight text-white shadow-[4px_4px_0_#000] sm:bottom-5 sm:px-3 sm:py-2 sm:leading-snug"
+        className="pointer-events-none absolute inset-x-0 z-30 mx-auto w-fit max-w-[min(90%,760px)] rounded-md border-2 border-white/80 px-2.5 py-1.5 text-center font-black leading-tight shadow-[4px_4px_0_#000] sm:px-3 sm:py-2 sm:leading-snug"
         style={{
-          backgroundColor: `rgb(17 24 39 / ${subtitleOpacity / 100})`,
+          bottom: `${subtitlePosition}%`,
+          backgroundColor:
+            `rgb(${hexToRgbChannels(subtitleBgColor)} / ${subtitleOpacity / 100})`,
+          color: subtitleTextColor,
           display: "-webkit-box",
           fontSize: `clamp(14px, 3.4vw, ${subtitleSize}px)`,
           maxHeight: "4.8em",
@@ -1471,8 +1554,11 @@ function SubtitleCaption({
 
   return (
     <div
-      className="rounded-md border-2 border-foreground bg-card px-3 py-2.5 text-center font-black leading-snug text-foreground shadow-[3px_3px_0_var(--vidura-ink)]"
+      className="rounded-md border-2 border-foreground px-3 py-2.5 text-center font-black leading-snug shadow-[3px_3px_0_var(--vidura-ink)]"
       style={{
+        backgroundColor:
+          `rgb(${hexToRgbChannels(subtitleBgColor)} / ${subtitleOpacity / 100})`,
+        color: subtitleTextColor,
         fontSize: `clamp(14px, 3.4vw, ${subtitleSize}px)`,
       }}
     >
@@ -1481,13 +1567,174 @@ function SubtitleCaption({
   );
 }
 
+// VLC-style subtitle controls that live on the player, so they also work in
+// fullscreen. Rendered inside the video container.
+function SubtitleSettingsPanel({ onClose }: { onClose: () => void }) {
+  const subtitleEnabled = useAppStore((s) => s.subtitleEnabled);
+  const setSubtitleEnabled = useAppStore((s) => s.setSubtitleEnabled);
+  const subtitlePlacement = useAppStore((s) => s.subtitlePlacement);
+  const setSubtitlePlacement = useAppStore((s) => s.setSubtitlePlacement);
+  const subtitleSize = useAppStore((s) => s.subtitleSize);
+  const setSubtitleSize = useAppStore((s) => s.setSubtitleSize);
+  const subtitleOpacity = useAppStore((s) => s.subtitleOpacity);
+  const setSubtitleOpacity = useAppStore((s) => s.setSubtitleOpacity);
+  const subtitleTextColor = useAppStore((s) => s.subtitleTextColor);
+  const setSubtitleTextColor = useAppStore((s) => s.setSubtitleTextColor);
+  const subtitleBgColor = useAppStore((s) => s.subtitleBgColor);
+  const setSubtitleBgColor = useAppStore((s) => s.setSubtitleBgColor);
+  const subtitlePosition = useAppStore((s) => s.subtitlePosition);
+  const setSubtitlePosition = useAppStore((s) => s.setSubtitlePosition);
+
+  return (
+    // Full-viewport modal. Kept as a descendant of the player container (rather
+    // than a portalled Dialog) with position:fixed, so it covers the viewport
+    // normally AND stays visible when the container is in fullscreen.
+    <div className="pointer-events-auto fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <button
+        aria-label="Close subtitle settings"
+        className="absolute inset-0 cursor-default bg-black/60"
+        onClick={onClose}
+        type="button"
+      />
+      <div className="relative flex max-h-[85vh] w-[min(92vw,360px)] flex-col rounded-lg border-2 border-white/25 bg-black/90 text-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-white/15 px-4 py-3">
+          <p className="text-sm font-black">Subtitle settings</p>
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={subtitleEnabled}
+              onCheckedChange={setSubtitleEnabled}
+            />
+            <button
+              aria-label="Close subtitle settings"
+              className="grid size-7 place-items-center rounded-md hover:bg-white/15"
+              onClick={onClose}
+              type="button"
+            >
+              <XIcon className="size-4" />
+            </button>
+          </div>
+        </div>
+
+        <ScrollArea className="max-h-[60vh]">
+          <div className="px-4 pb-4">
+            <SubtitlePanelRow label="Position">
+              <div className="flex gap-1.5">
+                {(["overlay", "below"] as const).map((placement) => (
+                  <button
+                    className={cn(
+                      "flex-1 rounded-md border border-white/25 px-2 py-1.5 text-xs font-bold",
+                      subtitlePlacement === placement
+                        ? "bg-vidura-mint text-black"
+                        : "bg-white/5 hover:bg-white/10",
+                    )}
+                    key={placement}
+                    onClick={() => setSubtitlePlacement(placement)}
+                    type="button"
+                  >
+                    {placement === "overlay" ? "On video" : "Below video"}
+                  </button>
+                ))}
+              </div>
+            </SubtitlePanelRow>
+
+            {subtitlePlacement === "overlay" ? (
+              <SubtitlePanelRow
+                label={`Vertical position · ${subtitlePosition}% from bottom`}
+              >
+                <Slider
+                  max={45}
+                  min={0}
+                  onValueChange={([value]) => setSubtitlePosition(value)}
+                  step={1}
+                  value={[subtitlePosition]}
+                />
+              </SubtitlePanelRow>
+            ) : null}
+
+            <SubtitlePanelRow label={`Font size · ${subtitleSize}px`}>
+              <Slider
+                max={44}
+                min={14}
+                onValueChange={([value]) => setSubtitleSize(value)}
+                step={1}
+                value={[subtitleSize]}
+              />
+            </SubtitlePanelRow>
+
+            <SubtitlePanelRow label={`Background opacity · ${subtitleOpacity}%`}>
+              <Slider
+                max={100}
+                min={0}
+                onValueChange={([value]) => setSubtitleOpacity(value)}
+                step={1}
+                value={[subtitleOpacity]}
+              />
+            </SubtitlePanelRow>
+
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <SubtitleColorField
+                label="Text"
+                onChange={setSubtitleTextColor}
+                value={subtitleTextColor}
+              />
+              <SubtitleColorField
+                label="Background"
+                onChange={setSubtitleBgColor}
+                value={subtitleBgColor}
+              />
+            </div>
+          </div>
+        </ScrollArea>
+      </div>
+    </div>
+  );
+}
+
+function SubtitlePanelRow(
+  { label, children }: { label: string; children: ReactNode },
+) {
+  return (
+    <div className="mt-3">
+      <p className="mb-1.5 text-xs font-bold text-white/70">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+function SubtitleColorField(
+  { label, value, onChange }: {
+    label: string;
+    value: string;
+    onChange: (value: string) => void;
+  },
+) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-bold text-white/70">{label}</span>
+      <span className="flex items-center gap-2 rounded-md border border-white/25 bg-white/5 px-1.5 py-1">
+        <input
+          className="size-7 cursor-pointer rounded border-0 bg-transparent p-0"
+          onChange={(event) => onChange(event.target.value)}
+          type="color"
+          value={value}
+        />
+        <span className="font-mono text-xs uppercase">{value}</span>
+      </span>
+    </label>
+  );
+}
+
 function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
   const subtitleEnabled = useAppStore((state) => state.subtitleEnabled);
   const subtitlePlacement = useAppStore((state) => state.subtitlePlacement);
   const subtitleSize = useAppStore((state) => state.subtitleSize);
   const subtitleOpacity = useAppStore((state) => state.subtitleOpacity);
+  const subtitleTextColor = useAppStore((state) => state.subtitleTextColor);
+  const subtitleBgColor = useAppStore((state) => state.subtitleBgColor);
+  const subtitlePosition = useAppStore((state) => state.subtitlePosition);
   const videoContainerRef = useRef<HTMLDivElement | null>(null);
   const [isImmersive, setIsImmersive] = useState(false);
+  const [subtitlePanelOpen, setSubtitlePanelOpen] = useState(false);
   const [playbackTime, setPlaybackTime] = useState<{
     videoId: string | null;
     milliseconds: number;
@@ -1654,24 +1901,43 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
               </>
             )}
             {youtubeVideoId ? (
-              <Button
-                aria-label={isImmersive ? "Exit fullscreen" : "Enter fullscreen"}
-                className="pointer-events-auto absolute top-2 right-2 z-20 border-2 border-white/80 bg-black/55 text-white hover:bg-black/75 lg:hidden"
-                onClick={() => {
-                  void toggleImmersivePlayback();
-                }}
-                size="icon-sm"
-                variant="ghost"
-              >
-                {isImmersive ? <Minimize2Icon /> : <Maximize2Icon />}
-              </Button>
+              <div className="pointer-events-auto absolute top-2 right-2 z-40 flex items-center gap-2">
+                <Button
+                  aria-label="Subtitle settings"
+                  className="border-2 border-white/80 bg-black/55 text-white hover:bg-black/75"
+                  onClick={() => setSubtitlePanelOpen((open) => !open)}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  <SettingsIcon />
+                </Button>
+                <Button
+                  aria-label={isImmersive ? "Exit fullscreen" : "Enter fullscreen"}
+                  className="border-2 border-white/80 bg-black/55 text-white hover:bg-black/75"
+                  onClick={() => {
+                    void toggleImmersivePlayback();
+                  }}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  {isImmersive ? <Minimize2Icon /> : <Maximize2Icon />}
+                </Button>
+              </div>
+            ) : null}
+            {youtubeVideoId && subtitlePanelOpen ? (
+              <SubtitleSettingsPanel
+                onClose={() => setSubtitlePanelOpen(false)}
+              />
             ) : null}
             {subtitleEnabled && showOverlaySubtitles ? (
               <SubtitleCaption
                 activeSubtitle={activeSubtitle}
                 failed={videoFailed}
+                subtitleBgColor={subtitleBgColor}
                 subtitleOpacity={subtitleOpacity}
+                subtitlePosition={subtitlePosition}
                 subtitleSize={subtitleSize}
+                subtitleTextColor={subtitleTextColor}
                 subtitlesStillLoading={subtitlesStillLoading}
                 variant="overlay"
               />
@@ -1691,8 +1957,10 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
           <SubtitleCaption
             activeSubtitle={activeSubtitle}
             failed={videoFailed}
+            subtitleBgColor={subtitleBgColor}
             subtitleOpacity={subtitleOpacity}
             subtitleSize={subtitleSize}
+            subtitleTextColor={subtitleTextColor}
             subtitlesStillLoading={subtitlesStillLoading}
             variant="below"
           />
@@ -1873,9 +2141,14 @@ function YouTubePlayerFrame({
           height: "100%",
           videoId,
           playerVars: {
-            controls: 1,
+            // Clean player: no YouTube chrome. We drive playback via the API
+            // and overlay our own controls + subtitles.
+            controls: 0,
+            disablekb: 1,
             enablejsapi: 1,
-            fs: 1,
+            fs: 0,
+            iv_load_policy: 3,
+            cc_load_policy: 0,
             modestbranding: 1,
             origin: window.location.origin,
             playsinline: 1,
@@ -1950,34 +2223,43 @@ function YouTubePlayerFrame({
     setIsPlaying(true);
   }
 
-  const showCenterPlay = isTouchPlayback && isPlayerReady && !playerError &&
-    !hasStartedPlayback;
-  const showMobilePlaybackControl = isTouchPlayback && isPlayerReady && !playerError &&
-    hasStartedPlayback;
+  const ready = isPlayerReady && !playerError;
+  const showCenterPlay = ready && !hasStartedPlayback;
+  const showPlaybackControl = ready && hasStartedPlayback;
 
   return (
     <>
       <div
         aria-label={title}
         className={cn(
-          "absolute inset-0 z-0 size-full touch-manipulation [&_iframe]:pointer-events-auto [&_iframe]:absolute [&_iframe]:inset-0 [&_iframe]:size-full [&_iframe]:h-full [&_iframe]:w-full [&>div]:absolute [&>div]:inset-0 [&>div]:size-full",
+          "absolute inset-0 z-0 size-full touch-manipulation [&_iframe]:pointer-events-none [&_iframe]:absolute [&_iframe]:inset-0 [&_iframe]:size-full [&_iframe]:h-full [&_iframe]:w-full [&>div]:absolute [&>div]:inset-0 [&>div]:size-full",
           playerError ? "pointer-events-none opacity-0" : null,
         )}
         ref={containerRef}
       />
-      {showCenterPlay ? (
+      {ready ? (
         <button
-          aria-label="Play video"
-          className="absolute inset-0 z-10 flex touch-manipulation items-center justify-center bg-black/25"
+          aria-label={isPlaying ? "Pause video" : "Play video"}
+          className="absolute inset-0 z-10 cursor-pointer"
           onClick={handleTogglePlayback}
           type="button"
+        />
+      ) : null}
+      {showCenterPlay ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-vidura-ink bg-cover bg-center"
+          style={{
+            backgroundImage:
+              `url(https://i.ytimg.com/vi/${videoId}/hqdefault.jpg)`,
+          }}
         >
-          <span className="grid size-20 place-items-center rounded-full border-2 border-white/90 bg-black/45 text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
+          <span className="absolute inset-0 bg-black/30" />
+          <span className="relative grid size-20 place-items-center rounded-full border-2 border-white/90 bg-black/50 text-white shadow-[0_8px_24px_rgba(0,0,0,0.45)]">
             <CirclePlayIcon className="ml-1 size-10" />
           </span>
-        </button>
+        </div>
       ) : null}
-      {showMobilePlaybackControl ? (
+      {showPlaybackControl ? (
         <button
           aria-label={isPlaying ? "Pause video" : "Play video"}
           className="pointer-events-auto absolute bottom-3 left-3 z-30 grid size-12 place-items-center rounded-full border-2 border-white/90 bg-black/60 text-white shadow-[0_6px_18px_rgba(0,0,0,0.45)] touch-manipulation"
@@ -3342,116 +3624,98 @@ function SettingsScreen() {
           </FieldSet>
         </FieldGroup>
       </StickerPanel>
-      <TranscriptHelperPanel />
+      <TranslationSettingsPanel />
       <ChatSettingsPanel />
     </section>
   );
 }
 
-function TranscriptHelperPanel() {
+type TranslationSettings = { targetLanguage: string; systemPrompt: string };
+const defaultTranslationSettings: TranslationSettings = {
+  targetLanguage: "Sinhala",
+  systemPrompt: "",
+};
+
+function TranslationSettingsPanel() {
   const queryClient = useQueryClient();
-  const tokenQuery = useQuery({
-    queryKey: ["ingest-token"],
-    queryFn: () => api.get<{ token: string | null }>("/api/ingest/token"),
+  const settingsQuery = useQuery({
+    queryKey: ["translation-settings"],
+    queryFn: () =>
+      api.get<TranslationSettings>("/api/settings/translation"),
   });
-  const rotateMutation = useMutation({
-    mutationFn: () => api.post<{ token: string | null }>("/api/ingest/token/rotate"),
-    onSuccess: (data) => queryClient.setQueryData(["ingest-token"], data),
+  const [draft, setDraft] = useState<TranslationSettings | null>(null);
+  const saveMutation = useMutation({
+    mutationFn: (next: TranslationSettings) =>
+      api.put<TranslationSettings>("/api/settings/translation", next),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(["translation-settings"], saved);
+      setDraft(saved);
+    },
   });
-  const [copied, setCopied] = useState(false);
 
-  const token = tokenQuery.data?.token ?? "";
-  const scriptUrl = `${apiBaseUrl}/transcript-helper.user.js`;
+  useEffect(() => {
+    if (settingsQuery.data && !draft) setDraft(settingsQuery.data);
+  }, [settingsQuery.data, draft]);
 
-  async function copyToken() {
-    if (!token) return;
-    try {
-      await navigator.clipboard.writeText(token);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      /* clipboard unavailable */
-    }
-  }
+  const current = draft ?? settingsQuery.data ?? defaultTranslationSettings;
+  const saved = settingsQuery.data ?? defaultTranslationSettings;
+  const isDirty = current.targetLanguage !== saved.targetLanguage ||
+    current.systemPrompt !== saved.systemPrompt;
 
   return (
     <StickerPanel
-      description="Add YouTube videos from your own browser — bypasses YouTube's server blocks, no proxies or logins needed."
-      title="Browser transcript helper"
+      description="Choose the language new videos are translated into, and optionally customize how the translator writes."
+      title="Translation"
     >
       <FieldGroup>
-        <FieldSet>
-          <FieldTitle>How it works</FieldTitle>
+        <Field>
+          <FieldLabel>Default translation language</FieldLabel>
           <FieldDescription>
-            YouTube blocks transcript downloads from servers, but not from your
-            browser. This one-time helper reads a video's captions right in your
-            browser and sends them here to be translated. Install it once, then
-            click <strong>Send to Vidura</strong> on any YouTube watch page.
+            New videos are translated into this language. Any language works —
+            e.g. Sinhala, Italian, German, Tamil.
           </FieldDescription>
-        </FieldSet>
-
-        <FieldSet>
-          <FieldTitle>1. Install a userscript manager</FieldTitle>
+          <Input
+            className="h-11 border-2 border-foreground bg-card"
+            onChange={(event) =>
+              setDraft({ ...current, targetLanguage: event.target.value })}
+            placeholder="Sinhala"
+            value={current.targetLanguage}
+          />
+        </Field>
+        <Field>
+          <FieldLabel>Custom translation prompt</FieldLabel>
           <FieldDescription>
-            Install the free{" "}
-            <a
-              className="font-bold underline"
-              href="https://www.tampermonkey.net/"
-              rel="noreferrer"
-              target="_blank"
-            >
-              Tampermonkey
-            </a>{" "}
-            browser extension (Chrome, Edge, Firefox, Safari) if you don't have
-            one already.
+            Optional. Guide the translator's tone, dialect, and style. Leave
+            blank to use the built-in default. The required output format is
+            always enforced automatically.
           </FieldDescription>
-        </FieldSet>
-
-        <FieldSet>
-          <FieldTitle>2. Install the Vidura helper</FieldTitle>
-          <FieldDescription>
-            Open the link below — Tampermonkey will offer to install it. It
-            auto-updates from here.
-          </FieldDescription>
-          <a href={scriptUrl} rel="noreferrer" target="_blank">
-            <CartoonButton type="button">
-              <LinkIcon data-icon="inline-start" />
-              Install transcript helper
-            </CartoonButton>
-          </a>
-        </FieldSet>
-
-        <FieldSet>
-          <FieldTitle>3. Paste your token when asked</FieldTitle>
-          <FieldDescription>
-            The first time you click <strong>Send to Vidura</strong>, paste this
-            personal token so it knows to send videos to your library. Keep it
-            private.
-          </FieldDescription>
-          <div className="flex items-center gap-2">
-            <Input
-              className="h-11 border-2 border-foreground bg-card font-mono text-sm"
-              readOnly
-              value={tokenQuery.isPending ? "Loading…" : token}
-            />
-            <Button
-              className="h-11 shrink-0 border-2 border-foreground bg-card"
-              onClick={copyToken}
-              type="button"
-              variant="outline"
-            >
-              {copied ? <CheckIcon /> : <CopyIcon />}
-            </Button>
-          </div>
-          <button
-            className="mt-1 self-start text-sm font-bold text-foreground/60 underline"
-            disabled={rotateMutation.isPending}
-            onClick={() => rotateMutation.mutate()}
+          <Textarea
+            className="min-h-32 border-2 border-foreground bg-card"
+            maxLength={4000}
+            onChange={(event) =>
+              setDraft({ ...current, systemPrompt: event.target.value })}
+            placeholder="e.g. Translate into warm, conversational Sinhala for young learners. Prefer everyday words over formal literary terms, and keep sentences short."
+            value={current.systemPrompt}
+          />
+        </Field>
+        <div className="flex items-center gap-3">
+          <CartoonButton
+            disabled={!isDirty || saveMutation.isPending}
+            onClick={() => saveMutation.mutate(current)}
             type="button"
           >
-            {rotateMutation.isPending ? "Generating…" : "Generate a new token"}
-          </button>
-        </FieldSet>
+            {saveMutation.isPending ? "Saving..." : "Save translation settings"}
+            <CheckIcon data-icon="inline-end" />
+          </CartoonButton>
+          {saveMutation.isSuccess && !isDirty ? (
+            <span className="text-sm font-bold text-foreground/60">Saved.</span>
+          ) : null}
+          {saveMutation.isError ? (
+            <span className="text-sm font-bold text-vidura-coral">
+              Could not save. Try again.
+            </span>
+          ) : null}
+        </div>
       </FieldGroup>
     </StickerPanel>
   );
