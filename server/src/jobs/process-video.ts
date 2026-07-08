@@ -118,7 +118,11 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
           stage: "storing_transcript",
           total_segments: transcriptSegments.length,
           translated_segments: 0,
-          transcript_source: uploaded.length > 0 ? "uploaded" : "youtube",
+          // "ytdlp" = frame-accurate YouTube captions, "gemini" = drift-prone
+          // audio ASR. Surfaced so out-of-sync reports are traceable to source.
+          transcript_source: uploaded.length > 0
+            ? "uploaded"
+            : ytData?.source ?? "youtube",
         },
       });
 

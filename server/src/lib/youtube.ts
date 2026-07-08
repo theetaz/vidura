@@ -42,10 +42,17 @@ export type VideoMetadata = {
 export type YouTubeVideoData = {
   metadata: VideoMetadata;
   segments: NormalizedTranscriptSegment[];
+  // Which pipeline produced the timings. "ytdlp" captions are frame-accurate;
+  // "gemini" is audio ASR and can drift by a few seconds — recorded so the
+  // source is diagnosable after the fact.
+  source: "ytdlp" | "gemini";
 };
 
 const youtubeIdPattern = /^[a-zA-Z0-9_-]{11}$/;
 const YTDLP_TIMEOUT_MS = 90_000;
+// Upper bound on cues per video. ASR emits ~2× the cues a manual track does,
+// so 500 truncated long videos a few minutes in; 2000 covers a normal lecture.
+const MAX_SEGMENTS = 2000;
 
 export function parseYouTubeUrl(value: string): ParsedYouTubeUrl | null {
   const input = value.trim();
@@ -118,7 +125,7 @@ export async function fetchYouTubeVideoData(
   }
 
   const metadata = await fetchYouTubeMetadata(videoId);
-  return { metadata, segments };
+  return { metadata, segments, source: "gemini" };
 }
 
 // yt-dlp through the proxy: YouTube's own caption track (json3) + real
@@ -127,12 +134,17 @@ async function fetchViaYtDlp(videoId: string): Promise<YouTubeVideoData> {
   const dir = await mkdtemp(join(tmpdir(), "vidura-yt-"));
 
   try {
-    await runYtDlp([
+    // Only the ORIGINAL English track: manual "en" or auto "en-orig". A glob
+    // like "en.*" also matches YouTube's ~30 auto-translated variants
+    // (en-ar, en-fr, …); downloading them all trips YouTube's rate limiter
+    // (HTTP 429), makes yt-dlp exit non-zero, and used to discard the accurate
+    // caption we already had — silently falling back to Gemini's drifty ASR.
+    const result = await runYtDlp([
       "--skip-download",
       "--write-subs",
       "--write-auto-subs",
       "--sub-langs",
-      "en.*,en,-live_chat",
+      "en-orig,en,-live_chat",
       "--sub-format",
       "json3",
       "--write-info-json",
@@ -148,13 +160,20 @@ async function fetchViaYtDlp(videoId: string): Promise<YouTubeVideoData> {
     const files = await readdir(dir);
     const metadata = await readInfoJson(dir, files, videoId);
 
-    // Prefer a manual English track; fall back to any en*.json3, then any json3.
+    // Prefer a manual English track; fall back to en-orig/en-*, then any json3.
     const subFile = files.find((f) => /\.en\.json3$/.test(f)) ??
       files.find((f) => /\.en[.-][^.]*\.json3$/.test(f)) ??
       files.find((f) => f.endsWith(".json3"));
 
+    // A non-zero exit is only fatal if we got NO usable caption. yt-dlp can
+    // exit 1 on a transient per-track hiccup after already writing the track
+    // we want, so file presence — not exit code — decides success here.
     if (!subFile) {
-      throw new Error(`No caption track for ${videoId}`);
+      throw new Error(
+        result.exitCode === 0
+          ? `No caption track for ${videoId}`
+          : `yt-dlp failed (${result.exitCode}): ${result.errorDetail}`,
+      );
     }
 
     const segments = parseJson3(await readFile(join(dir, subFile), "utf8"));
@@ -162,7 +181,7 @@ async function fetchViaYtDlp(videoId: string): Promise<YouTubeVideoData> {
       throw new Error(`Empty caption track for ${videoId}`);
     }
 
-    return { metadata, segments };
+    return { metadata, segments, source: "ytdlp" };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -237,12 +256,37 @@ function parseJson3(raw: string): NormalizedTranscriptSegment[] {
     out.push({ index: out.length, startMs, endMs: startMs + durMs, text });
   }
 
-  return out.slice(0, 500);
+  // Auto-generated (ASR) captions overshoot: each rolling window's dDurationMs
+  // runs well past the next cue's start, so at any instant two cues overlap and
+  // the player shows the earlier one — the subtitle visibly lags the audio.
+  // Clamp every cue to end where the next begins for continuous, correctly
+  // synced captions. Manual tracks don't overlap, so this leaves them untouched
+  // (real gaps of silence between cues are preserved, never stretched).
+  for (let i = 0; i < out.length - 1; i += 1) {
+    const cur = out[i];
+    const next = out[i + 1];
+    if (cur && next && cur.endMs > next.startMs) {
+      cur.endMs = Math.max(cur.startMs + 1, next.startMs);
+    }
+  }
+
+  // Re-index after any drops and cap length. The cap bounds translation cost
+  // and DB size; ASR emits ~2× more cues than manual tracks, so keep it high
+  // enough that a normal-length lecture isn't truncated mid-way.
+  return out.slice(0, MAX_SEGMENTS).map((seg, index) => ({ ...seg, index }));
 }
 
-async function runYtDlp(
-  args: string[],
-): Promise<{ stdout: string; stderr: string }> {
+type YtDlpResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  errorDetail: string;
+};
+
+// Runs yt-dlp and returns its exit code rather than throwing on failure — the
+// caller decides whether a non-zero exit matters, since yt-dlp can fail on one
+// track after successfully writing the one we actually need.
+async function runYtDlp(args: string[]): Promise<YtDlpResult> {
   const fullArgs = [...args];
   // The residential proxy gives yt-dlp a clean IP YouTube trusts.
   if (env.youtubeProxyUrl) {
@@ -269,12 +313,14 @@ async function runYtDlp(
       proc.exited,
     ]);
 
-    if (exitCode !== 0) {
-      const detail = stderr.split("\n").filter(Boolean).slice(-2).join(" ");
-      throw new Error(`yt-dlp failed (${exitCode}): ${detail.slice(0, 300)}`);
-    }
+    const errorDetail = stderr
+      .split("\n")
+      .filter(Boolean)
+      .slice(-2)
+      .join(" ")
+      .slice(0, 300);
 
-    return { stdout, stderr };
+    return { stdout, stderr, exitCode, errorDetail };
   } finally {
     clearTimeout(timer);
   }
