@@ -73,11 +73,17 @@ ingest.post("/transcript", async (c) => {
   );
   if (!parsed) return c.json({ error: "Missing or invalid YouTube video id/url" }, 400);
 
-  const segments = (body?.segments ?? [])
+  if (!Array.isArray(body?.segments)) {
+    return c.json({ error: "segments must be an array" }, 400);
+  }
+  // Cap the payload so a leaked token can't enqueue an oversized job. The
+  // processing pipeline uses at most 500 segments anyway.
+  const segments = body.segments
+    .slice(0, 2000)
     .map((s) => ({
       startMs: Math.max(0, Math.floor(Number(s.startMs) || 0)),
       endMs: Math.max(1, Math.floor(Number(s.endMs) || 0)),
-      text: (s.text ?? "").replace(/\s+/g, " ").trim(),
+      text: (s.text ?? "").replace(/\s+/g, " ").trim().slice(0, 1000),
     }))
     .filter((s) => s.text);
   if (segments.length === 0) {

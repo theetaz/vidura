@@ -53,6 +53,38 @@ export async function fetchMetadataViaDataApi(
   }
 }
 
+// ---- Metadata via keyless oembed (fallback when no Data API key) ----
+// Returns title, channel, thumbnail — but no duration. Works from any IP.
+
+export async function fetchMetadataViaOembed(
+  videoId: string,
+): Promise<VideoMetadata | null> {
+  try {
+    const url = "https://www.youtube.com/oembed?format=json&url=" +
+      encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`);
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(DATA_API_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+
+    const data = await res.json() as any;
+    if (typeof data?.title !== "string") return null;
+
+    return {
+      title: data.title,
+      channelTitle: typeof data.author_name === "string"
+        ? data.author_name
+        : null,
+      durationMs: null,
+      thumbnailUrl: typeof data.thumbnail_url === "string"
+        ? data.thumbnail_url
+        : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ISO-8601 duration (PT#H#M#S) → milliseconds.
 function parseIsoDuration(value: unknown): number | null {
   if (typeof value !== "string") return null;

@@ -70,10 +70,10 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
       const uploaded = normalizeSegments(data.segments);
       // When the client supplies the transcript (browser userscript or file
       // upload), it also supplies the metadata, already written to the video
-      // row at ingest time — so no YouTube network call is made at all (the
-      // VPS IP is blocked by YouTube). A null-metadata object below keeps the
-      // existing row values via coalesce. Otherwise, one yt-dlp call fetches
-      // both metadata and the transcript.
+      // row at ingest time — so no YouTube network call is made at all. A
+      // null-metadata object below keeps the existing row values via coalesce.
+      // Otherwise Gemini fetches the transcript and the Data API/oembed the
+      // metadata.
       const ytData = uploaded.length > 0
         ? null
         : await fetchYouTubeVideoData(video.youtube_video_id);
