@@ -2,7 +2,7 @@ import { env } from "../env.ts";
 
 const openRouterUrl = "https://openrouter.ai/api/v1/chat/completions";
 
-const OPENROUTER_JSON_TIMEOUT_MS = 55_000;
+const OPENROUTER_JSON_TIMEOUT_MS = 120_000;
 const OPENROUTER_STREAM_TIMEOUT_MS = 90_000;
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };

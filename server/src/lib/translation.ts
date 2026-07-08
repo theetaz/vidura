@@ -94,9 +94,26 @@ function formatFullTranscriptForPrompt(segments: NormalizedTranscriptSegment[]) 
   return segments.map((segment) => `[${segment.index}] ${segment.text}`).join("\n");
 }
 
+// Source lines within WINDOW indices of the batch, for local flow. The
+// whole-video understanding lives in the distilled context (topic/summary/
+// guidelines/keyTerms), so batches don't need the full transcript — sending it
+// every time made long-video batches time out.
+const NEARBY_WINDOW = 15;
+
+function nearbySegments(
+  allSegments: NormalizedTranscriptSegment[],
+  batch: NormalizedTranscriptSegment[],
+): NormalizedTranscriptSegment[] {
+  const first = batch[0]?.index ?? 0;
+  const last = batch[batch.length - 1]?.index ?? first;
+  return allSegments.filter(
+    (s) => s.index >= first - NEARBY_WINDOW && s.index <= last + NEARBY_WINDOW,
+  );
+}
+
 function buildTranslationSystemPrompt(
   context: TranslationContext,
-  allSegments: NormalizedTranscriptSegment[],
+  nearby: NormalizedTranscriptSegment[],
 ) {
   const keyTerms = context.keyTerms.length > 0
     ? context.keyTerms.map((term) => `${term.source} → ${term.preferredSinhala}`).join("; ")
@@ -117,8 +134,8 @@ function buildTranslationSystemPrompt(
     `Style guide: ${context.translationGuidelines}`,
     `Key terms: ${keyTerms}`,
     "",
-    "Full source transcript (read for global context; translate only requested indices):",
-    formatFullTranscriptForPrompt(allSegments),
+    "Nearby source lines (for local flow; translate only the requested indices):",
+    formatFullTranscriptForPrompt(nearby),
     "",
     "Return only valid JSON.",
   ].join("\n");
@@ -150,7 +167,10 @@ async function translateSegmentBatch(input: {
 }) {
   const parsed = await requestOpenRouterJson<Record<string, unknown>>({
     model: input.model,
-    system: buildTranslationSystemPrompt(input.translationContext, input.allSegments),
+    system: buildTranslationSystemPrompt(
+      input.translationContext,
+      nearbySegments(input.allSegments, input.segments),
+    ),
     user: {
       sourceLanguage: input.sourceLanguage,
       targetLanguage: input.targetLanguage,
