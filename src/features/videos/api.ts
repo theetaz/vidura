@@ -14,9 +14,26 @@ export type ProcessingJob = {
   updatedAt: string;
 };
 
+export type SubtitleQuality = {
+  score: number;
+  label: "excellent" | "good" | "fair" | "poor";
+  source: "ytdlp" | "gemini" | "uploaded";
+  metrics: {
+    segmentCount: number;
+    overlapCount: number;
+    outOfOrderCount: number;
+    invalidDurationCount: number;
+    coverageRatio: number | null;
+    largestGapMs: number;
+  };
+};
+
 export type LibraryVideo = Video & {
   createdAt: string;
   latestJob: ProcessingJob | null;
+  transcriptSource: "ytdlp" | "gemini" | "uploaded" | null;
+  subtitleQuality: SubtitleQuality | null;
+  translationModel: string | null;
 };
 
 // Shapes returned by the self-hosted API (camelCase DTOs).
@@ -31,6 +48,9 @@ type VideoDTO = {
   targetLanguage: string;
   status: "queued" | "fetching_transcript" | "translating" | "ready" | "failed";
   errorMessage: string | null;
+  transcriptSource: "ytdlp" | "gemini" | "uploaded" | null;
+  subtitleQuality: SubtitleQuality | null;
+  translationModel: string | null;
   createdAt: string;
   latestJob: ProcessingJob | null;
 };
@@ -257,6 +277,9 @@ function mapVideo(video: VideoDTO): LibraryVideo {
     Icon: emptyImportIcon,
     createdAt: video.createdAt,
     latestJob,
+    transcriptSource: video.transcriptSource ?? null,
+    subtitleQuality: video.subtitleQuality ?? null,
+    translationModel: video.translationModel ?? null,
   };
 }
 

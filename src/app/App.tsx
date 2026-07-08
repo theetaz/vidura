@@ -25,6 +25,7 @@ import {
   BadgeCheckIcon,
   BellIcon,
   BookOpenIcon,
+  CaptionsIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -477,6 +478,84 @@ function VideoStatusPill({ video }: { video: LibraryVideo }) {
     return <span className={cn(base, "bg-vidura-mint")}>Ready</span>;
   }
   return <span className={cn(base, "bg-card")}>Queued</span>;
+}
+
+// Friendly display name for the model id that produced the translation.
+function translationModelLabel(model: string | null): string | null {
+  if (!model) return null;
+  const value = model.toLowerCase();
+  if (value.includes("deepseek")) return "DeepSeek";
+  if (value.includes("gpt") || value.includes("openai")) return "OpenAI";
+  if (value.includes("gemini")) return "Gemini";
+  return model.split("/").pop() ?? model;
+}
+
+// Provenance + timing-quality badges for the watch page: where the transcript
+// timestamps came from (YouTube's own captions vs Gemini audio ASR), which
+// model translated the subtitles, and a sync-quality score computed from the
+// timings themselves (overlaps, ordering, runtime coverage).
+function SubtitleProvenanceBadges({ video }: { video: LibraryVideo }) {
+  const quality = video.subtitleQuality;
+  const source = video.transcriptSource ?? quality?.source ?? null;
+  const model = translationModelLabel(video.translationModel);
+  if (!source && !quality && !model) return null;
+
+  const base =
+    "inline-flex items-center gap-1.5 rounded-md border-2 border-foreground px-2 py-0.5 text-xs font-bold text-foreground";
+  const sourceLabel = source === "ytdlp"
+    ? "YouTube captions"
+    : source === "gemini"
+    ? "AI transcribed · Gemini"
+    : source === "uploaded"
+    ? "Uploaded transcript"
+    : null;
+  const qualityTone = quality
+    ? quality.label === "excellent"
+      ? "bg-vidura-mint"
+      : quality.label === "good"
+      ? "bg-vidura-sky"
+      : quality.label === "fair"
+      ? "bg-vidura-sun"
+      : "bg-vidura-coral"
+    : "bg-card";
+  const qualityTitle = quality
+    ? `${quality.metrics.segmentCount} lines · ${quality.metrics.overlapCount} overlaps` +
+      (quality.metrics.coverageRatio !== null
+        ? ` · covers ${Math.round(quality.metrics.coverageRatio * 100)}% of the video`
+        : "")
+    : undefined;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {sourceLabel ? (
+        <span
+          className={cn(
+            base,
+            source === "ytdlp" ? "bg-vidura-mint" : "bg-vidura-sun",
+          )}
+          title={source === "ytdlp"
+            ? "Timestamps come from YouTube's own caption track (frame-accurate)."
+            : source === "gemini"
+            ? "No caption track on YouTube — Gemini transcribed the audio (timing can drift a few seconds)."
+            : "Transcript was supplied at import time."}
+        >
+          <CaptionsIcon className="size-3.5" />
+          {sourceLabel}
+        </span>
+      ) : null}
+      {quality ? (
+        <span className={cn(base, qualityTone)} title={qualityTitle}>
+          <BadgeCheckIcon className="size-3.5" />
+          Sync {quality.score}%
+        </span>
+      ) : null}
+      {model ? (
+        <span className={cn(base, "bg-card")}>
+          Translated by {model}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function InlineLoadingNotice({ label }: { label: string }) {
@@ -1971,6 +2050,7 @@ function WatchScreen({ videos }: { videos: LibraryVideo[] }) {
             variant="below"
           />
         ) : null}
+        <SubtitleProvenanceBadges video={selectedVideo} />
         <div className="grid gap-4 xl:hidden">
           <TranscriptPanel
             activeSegmentId={activeSubtitle?.id ?? null}
@@ -3473,6 +3553,9 @@ function VideoInfoPanel({ video }: { video: LibraryVideo }) {
             {video.channel}
           </p>
         </div>
+      </div>
+      <div className="mt-3">
+        <SubtitleProvenanceBadges video={video} />
       </div>
       <Separator className="my-4" />
       <div className="flex flex-col gap-2">

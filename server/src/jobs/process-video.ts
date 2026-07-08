@@ -20,6 +20,10 @@ import {
   translationModelName,
 } from "../lib/openai.ts";
 import { fetchTranslationSettings } from "../lib/translation-settings.ts";
+import {
+  assessSubtitleQuality,
+  type SubtitleSource,
+} from "../lib/subtitle-quality.ts";
 import { sendPushToOwner } from "../lib/push.ts";
 import type { ProcessVideoJobData } from "./boss.ts";
 
@@ -47,9 +51,16 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
 
   try {
     const [video] = await sql<
-      Array<{ youtube_video_id: string; title: string; channel_title: string | null }>
+      Array<{
+        youtube_video_id: string;
+        title: string;
+        channel_title: string | null;
+        duration_ms: number | null;
+        metadata: Record<string, unknown>;
+      }>
     >`
-      select youtube_video_id, title, channel_title from videos where id = ${videoId}
+      select youtube_video_id, title, channel_title, duration_ms, metadata
+      from videos where id = ${videoId}
     `;
     if (!video) throw new Error("Video for processing job was not found");
 
@@ -110,6 +121,12 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         throw new Error("No transcript segments were available for this video");
       }
 
+      // "ytdlp" = frame-accurate YouTube captions, "gemini" = drift-prone
+      // audio ASR. Surfaced so out-of-sync reports are traceable to source.
+      const transcriptSource: SubtitleSource = uploaded.length > 0
+        ? "uploaded"
+        : ytData?.source ?? "gemini";
+
       await updateJob(jobId, videoId, {
         jobStatus: "running",
         videoStatus: "fetching_transcript",
@@ -118,11 +135,7 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
           stage: "storing_transcript",
           total_segments: transcriptSegments.length,
           translated_segments: 0,
-          // "ytdlp" = frame-accurate YouTube captions, "gemini" = drift-prone
-          // audio ASR. Surfaced so out-of-sync reports are traceable to source.
-          transcript_source: uploaded.length > 0
-            ? "uploaded"
-            : ytData?.source ?? "youtube",
+          transcript_source: transcriptSource,
         },
       });
 
@@ -131,6 +144,43 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         data.sourceLanguage,
         transcriptSegments,
       );
+
+      // Score the timings (ordering, overlap, runtime coverage + source
+      // confidence) and persist source + score on the video for the UI.
+      const quality = assessSubtitleQuality(
+        transcriptSegments,
+        metadata.durationMs ?? video.duration_ms,
+        transcriptSource,
+      );
+      await sql`
+        update videos set metadata = metadata || ${sql.json({
+        transcript_source: transcriptSource,
+        subtitle_quality: quality,
+      })}
+        where id = ${videoId}
+      `;
+    } else {
+      // Transcript was already stored (e.g. re-translate). Backfill the
+      // quality score for videos processed before scoring existed, using the
+      // recorded source when available.
+      const knownSource = video.metadata?.transcript_source;
+      if (
+        !video.metadata?.subtitle_quality &&
+        (knownSource === "ytdlp" || knownSource === "gemini" ||
+          knownSource === "uploaded")
+      ) {
+        const quality = assessSubtitleQuality(
+          transcriptSegments,
+          video.duration_ms,
+          knownSource,
+        );
+        await sql`
+          update videos set metadata = metadata || ${sql.json({
+          subtitle_quality: quality,
+        })}
+          where id = ${videoId}
+        `;
+      }
     }
 
     if (data.forceRetranslate) {
@@ -281,6 +331,16 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
       translatedCount += batchTranslations.length;
     }
     }
+
+    // Record which model produced the subtitles so the UI can attribute them.
+    await sql`
+      update videos set metadata = metadata || ${sql.json({
+      translation_model: singleShotTranslationEnabled()
+        ? translationModelName()
+        : env.openRouterModel,
+    })}
+      where id = ${videoId}
+    `;
 
     await updateJob(jobId, videoId, {
       jobStatus: "ready",

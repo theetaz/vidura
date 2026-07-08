@@ -20,6 +20,7 @@ type VideoRow = {
   target_language: string;
   status: string;
   error_message: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
 };
 
@@ -48,6 +49,7 @@ function mapJob(job: JobRow) {
 }
 
 function mapVideo(video: VideoRow, latestJob: JobRow | null) {
+  const meta = video.metadata ?? {};
   return {
     id: video.id,
     youtubeVideoId: video.youtube_video_id,
@@ -60,6 +62,10 @@ function mapVideo(video: VideoRow, latestJob: JobRow | null) {
     targetLanguage: video.target_language,
     status: video.status,
     errorMessage: video.error_message,
+    // Subtitle provenance + timing-quality score, written by process-video.
+    transcriptSource: meta.transcript_source ?? null,
+    subtitleQuality: meta.subtitle_quality ?? null,
+    translationModel: meta.translation_model ?? null,
     createdAt: video.created_at,
     latestJob: latestJob ? mapJob(latestJob) : null,
   };
@@ -70,7 +76,7 @@ videos.get("/", async (c) => {
   const ownerId = c.get("user").id;
   const videoRows = await sql<VideoRow[]>`
     select id, youtube_video_id, youtube_url, title, channel_title, thumbnail_url,
-      duration_ms, target_language, status, error_message, created_at
+      duration_ms, target_language, status, error_message, metadata, created_at
     from videos where owner_id = ${ownerId} order by created_at desc
   `;
   if (videoRows.length === 0) return c.json([]);
@@ -159,7 +165,8 @@ videos.post("/", async (c) => {
     on conflict (owner_id, youtube_video_id) do update set
       youtube_url = excluded.youtube_url, status = 'queued', error_message = null
     returning id, youtube_video_id, youtube_url, title, channel_title,
-      thumbnail_url, duration_ms, target_language, status, error_message, created_at
+      thumbnail_url, duration_ms, target_language, status, error_message,
+      metadata, created_at
   `;
   if (!video) return c.json({ error: "Failed to create video" }, 500);
 
