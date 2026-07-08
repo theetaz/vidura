@@ -1,11 +1,19 @@
 // YouTube URL parsing, metadata, and transcript extraction.
 //
-// The VPS's datacenter IP is hard-blocked by YouTube, so nothing here scrapes
-// YouTube directly. Transcripts come from Gemini (Google fetches the public
-// URL on its own infrastructure); metadata from the YouTube Data API or the
-// keyless oembed endpoint. Desktop users can also push a transcript from the
-// browser userscript (see routes/ingest.ts), which bypasses this module.
+// Two transcript sources, chosen automatically:
+//   1. yt-dlp through a residential proxy (YOUTUBE_PROXY_URL) — fetches
+//      YouTube's OWN caption track, so timing is frame-accurate. Only tried
+//      when a proxy is set, because the VPS's datacenter IP is blocked.
+//   2. Gemini (Google fetches the public URL on its own IP) — audio ASR with
+//      ~±3s timestamps. Used when there's no proxy, or as a fallback for
+//      videos that have no caption track.
+// Desktop users can also push a transcript from the browser userscript (see
+// routes/ingest.ts), which bypasses this module entirely.
 
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { env } from "../env.ts";
 import {
   fetchMetadataViaDataApi,
   fetchMetadataViaOembed,
@@ -37,6 +45,7 @@ export type YouTubeVideoData = {
 };
 
 const youtubeIdPattern = /^[a-zA-Z0-9_-]{11}$/;
+const YTDLP_TIMEOUT_MS = 90_000;
 
 export function parseYouTubeUrl(value: string): ParsedYouTubeUrl | null {
   const input = value.trim();
@@ -86,16 +95,25 @@ export function fallbackMetadata(videoId: string): VideoMetadata {
   };
 }
 
-// Transcript + metadata via Gemini (Google fetches the public YouTube URL, so
-// the VPS IP block is irrelevant). Metadata comes from the Data API / oembed.
+// Transcript + metadata. Prefers yt-dlp through the proxy (frame-accurate
+// YouTube captions); falls back to Gemini (audio ASR) with no proxy or when
+// the video has no caption track.
 export async function fetchYouTubeVideoData(
   videoId: string,
 ): Promise<YouTubeVideoData> {
+  if (env.youtubeProxyUrl) {
+    try {
+      return await fetchViaYtDlp(videoId);
+    } catch {
+      // No caption track, or a yt-dlp/proxy hiccup — fall through to Gemini.
+    }
+  }
+
   const segments = await fetchTranscriptViaGemini(videoId);
   if (!segments || segments.length === 0) {
     throw new Error(
-      "Couldn't get a transcript for this video. Configure GEMINI_API_KEY, " +
-        "or add it from the browser transcript helper.",
+      "Couldn't get a transcript for this video. Set YOUTUBE_PROXY_URL or " +
+        "GEMINI_API_KEY, or add it from the browser transcript helper.",
     );
   }
 
@@ -103,12 +121,161 @@ export async function fetchYouTubeVideoData(
   return { metadata, segments };
 }
 
-// Metadata only (used when the client supplied the transcript, or alongside a
-// Gemini transcript). Data API → keyless oembed → thumbnail-only fallback.
+// yt-dlp through the proxy: YouTube's own caption track (json3) + real
+// metadata. Throws when the video has no captions so the caller can fall back.
+async function fetchViaYtDlp(videoId: string): Promise<YouTubeVideoData> {
+  const dir = await mkdtemp(join(tmpdir(), "vidura-yt-"));
+
+  try {
+    await runYtDlp([
+      "--skip-download",
+      "--write-subs",
+      "--write-auto-subs",
+      "--sub-langs",
+      "en.*,en,-live_chat",
+      "--sub-format",
+      "json3",
+      "--write-info-json",
+      "--no-warnings",
+      "--no-playlist",
+      "--retries",
+      "3",
+      "-o",
+      join(dir, "%(id)s"),
+      `https://www.youtube.com/watch?v=${videoId}`,
+    ]);
+
+    const files = await readdir(dir);
+    const metadata = await readInfoJson(dir, files, videoId);
+
+    // Prefer a manual English track; fall back to any en*.json3, then any json3.
+    const subFile = files.find((f) => /\.en\.json3$/.test(f)) ??
+      files.find((f) => /\.en[.-][^.]*\.json3$/.test(f)) ??
+      files.find((f) => f.endsWith(".json3"));
+
+    if (!subFile) {
+      throw new Error(`No caption track for ${videoId}`);
+    }
+
+    const segments = parseJson3(await readFile(join(dir, subFile), "utf8"));
+    if (segments.length === 0) {
+      throw new Error(`Empty caption track for ${videoId}`);
+    }
+
+    return { metadata, segments };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Metadata only (used when the client supplied the transcript). Data API →
+// keyless oembed → thumbnail-only fallback.
 export async function fetchYouTubeMetadata(
   videoId: string,
 ): Promise<VideoMetadata> {
   return (await fetchMetadataViaDataApi(videoId)) ??
     (await fetchMetadataViaOembed(videoId)) ??
     fallbackMetadata(videoId);
+}
+
+async function readInfoJson(
+  dir: string,
+  files: string[],
+  videoId: string,
+): Promise<VideoMetadata> {
+  const infoFile = files.find((f) => f.endsWith(".info.json"));
+  if (!infoFile) return fallbackMetadata(videoId);
+  try {
+    const info = JSON.parse(await readFile(join(dir, infoFile), "utf8"));
+    return infoToMetadata(info, videoId);
+  } catch {
+    return fallbackMetadata(videoId);
+  }
+}
+
+function infoToMetadata(info: any, videoId: string): VideoMetadata {
+  const fallback = fallbackMetadata(videoId);
+  return {
+    title: typeof info?.title === "string" ? info.title : null,
+    channelTitle: typeof info?.uploader === "string"
+      ? info.uploader
+      : typeof info?.channel === "string"
+      ? info.channel
+      : null,
+    durationMs: typeof info?.duration === "number"
+      ? Math.round(info.duration * 1000)
+      : null,
+    thumbnailUrl: typeof info?.thumbnail === "string"
+      ? info.thumbnail
+      : fallback.thumbnailUrl,
+  };
+}
+
+// Parses YouTube's json3 caption format into normalized segments.
+function parseJson3(raw: string): NormalizedTranscriptSegment[] {
+  const data = JSON.parse(raw);
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const out: NormalizedTranscriptSegment[] = [];
+  let lastText = "";
+
+  for (const event of events) {
+    if (!Array.isArray(event?.segs)) continue;
+
+    const text = event.segs
+      .map((seg: any) => (typeof seg?.utf8 === "string" ? seg.utf8 : ""))
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // Skip empties and consecutive duplicates (auto-caption rolling lines).
+    if (!text || text === lastText) continue;
+    lastText = text;
+
+    const startMs = Math.max(0, Math.floor(Number(event.tStartMs) || 0));
+    const durMs = Math.max(1, Math.floor(Number(event.dDurationMs) || 4500));
+
+    out.push({ index: out.length, startMs, endMs: startMs + durMs, text });
+  }
+
+  return out.slice(0, 500);
+}
+
+async function runYtDlp(
+  args: string[],
+): Promise<{ stdout: string; stderr: string }> {
+  const fullArgs = [...args];
+  // The residential proxy gives yt-dlp a clean IP YouTube trusts.
+  if (env.youtubeProxyUrl) {
+    fullArgs.unshift("--proxy", env.youtubeProxyUrl);
+  }
+
+  const proc = Bun.spawn(["yt-dlp", ...fullArgs], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const timer = setTimeout(() => {
+    try {
+      proc.kill();
+    } catch {
+      // already exited
+    }
+  }, YTDLP_TIMEOUT_MS);
+
+  try {
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    if (exitCode !== 0) {
+      const detail = stderr.split("\n").filter(Boolean).slice(-2).join(" ");
+      throw new Error(`yt-dlp failed (${exitCode}): ${detail.slice(0, 300)}`);
+    }
+
+    return { stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
 }

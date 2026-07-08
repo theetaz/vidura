@@ -1,7 +1,10 @@
 FROM oven/bun:1.3.0-alpine
 
-# Transcripts come from Gemini (Google fetches the YouTube URL) — no yt-dlp,
-# Python, or media tooling needed in the image.
+# yt-dlp fetches YouTube's own caption track (frame-accurate) through the
+# residential proxy. Without a proxy it's unused and Gemini handles transcripts.
+RUN apk add --no-cache python3 py3-pip \
+  && pip install --break-system-packages --no-cache-dir -U yt-dlp
+
 WORKDIR /app
 
 # Install dependencies against the committed lockfile.

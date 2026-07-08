@@ -24,6 +24,10 @@ export const env = {
   openRouterModel: optional("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
   openRouterChatModel: optional("OPENROUTER_CHAT_MODEL"),
   port: Number(optional("PORT", "8787")),
+  // Residential proxy for YouTube. The VPS's datacenter IP is blocked, so
+  // yt-dlp (which fetches YouTube's own frame-accurate caption track) only
+  // runs when this points at a clean residential IP. Empty = Gemini only.
+  youtubeProxyUrl: optional("YOUTUBE_PROXY_URL"),
   // Transcript + metadata via official Google APIs (Google fetches the public
   // YouTube URL on its own infrastructure, so the VPS IP block is irrelevant).
   // Gemini transcribes; the YouTube Data API serves exact metadata. One Cloud
