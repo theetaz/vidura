@@ -8,6 +8,7 @@ import { notes } from "./routes/notes.ts";
 import { settings } from "./routes/settings.ts";
 import { chat } from "./routes/chat.ts";
 import { realtime } from "./routes/realtime.ts";
+import { push } from "./routes/push.ts";
 
 const app = new Hono();
 
@@ -39,6 +40,7 @@ app.route("/api/notes", notes);
 app.route("/api/settings", settings);
 app.route("/api/chat", chat);
 app.route("/api/realtime", realtime);
+app.route("/api/push", push);
 
 // Explicit Bun.serve so idleTimeout is honored — SSE streams (chat + realtime)
 // must outlive Bun's default 10s idle timeout. 255s is Bun's max, comfortably

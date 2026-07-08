@@ -133,6 +133,18 @@ create table if not exists public.user_translation_settings (
   updated_at timestamptz not null default now()
 );
 
+-- Web Push subscriptions (one row per browser/device that opted in).
+create table if not exists public.push_subscription (
+  id uuid primary key default gen_random_uuid(),
+  owner_id text not null references public."user"(id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists push_subscription_owner_idx
+  on public.push_subscription (owner_id);
+
 create index if not exists videos_owner_status_created_idx
   on public.videos (owner_id, status, created_at desc);
 create index if not exists processing_jobs_owner_video_created_idx

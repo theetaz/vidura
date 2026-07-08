@@ -20,6 +20,7 @@ import {
   translationModelName,
 } from "../lib/openai.ts";
 import { fetchTranslationSettings } from "../lib/translation-settings.ts";
+import { sendPushToOwner } from "../lib/push.ts";
 import type { ProcessVideoJobData } from "./boss.ts";
 
 type StoredSegment = {
@@ -287,6 +288,13 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         translated_segments: translatedCount,
       },
     });
+
+    await sendPushToOwner(data.ownerId, {
+      title: "Subtitles ready 🎬",
+      body: `"${video.title}" is translated and ready to watch.`,
+      url: `/watch/${videoId}`,
+      tag: `video-${videoId}`,
+    }).catch(() => {});
   } catch (error) {
     const message = error instanceof Error ? error.message : "Processing failed";
     await updateJob(jobId, videoId, {

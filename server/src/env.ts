@@ -47,9 +47,16 @@ export const env = {
   // videos (±100s+), and pro is both slower and less accurate here.
   geminiModel: optional("GEMINI_MODEL", "gemini-2.5-flash"),
   youtubeApiKey: optional("YOUTUBE_API_KEY"),
+  // Web Push (VAPID). Notifies users when a video finishes processing.
+  vapidPublicKey: optional("VAPID_PUBLIC_KEY"),
+  vapidPrivateKey: optional("VAPID_PRIVATE_KEY"),
+  vapidSubject: optional("VAPID_SUBJECT", "mailto:theekshana2@gmail.com"),
   // Email/password is a local-testing convenience; production uses Google only.
   emailPasswordAuth: optional("AUTH_EMAIL_PASSWORD", "false") === "true",
   get googleEnabled() {
     return Boolean(this.googleClientId && this.googleClientSecret);
+  },
+  get pushEnabled() {
+    return Boolean(this.vapidPublicKey && this.vapidPrivateKey);
   },
 };

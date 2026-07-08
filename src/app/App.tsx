@@ -151,6 +151,12 @@ import {
 } from "@/features/videos/data";
 import { Input } from "@/components/ui/input";
 import { api, apiBaseUrl, isApiConfigured } from "@/lib/api";
+import {
+  disablePush,
+  enablePush,
+  isPushSubscribed,
+  pushSupported,
+} from "@/features/notifications/push";
 import { parseTranscriptFile } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import {
@@ -3624,9 +3630,74 @@ function SettingsScreen() {
           </FieldSet>
         </FieldGroup>
       </StickerPanel>
+      <NotificationSettingsPanel />
       <TranslationSettingsPanel />
       <ChatSettingsPanel />
     </section>
+  );
+}
+
+function NotificationSettingsPanel() {
+  const [supported] = useState(() => pushSupported());
+  const [subscribed, setSubscribed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void isPushSubscribed().then(setSubscribed);
+  }, []);
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    setError("");
+    try {
+      if (next) {
+        await enablePush();
+        setSubscribed(true);
+      } else {
+        await disablePush();
+        setSubscribed(false);
+      }
+    } catch (toggleError) {
+      setError(
+        toggleError instanceof Error
+          ? toggleError.message
+          : "Could not update notifications.",
+      );
+      setSubscribed(await isPushSubscribed());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <StickerPanel
+      description="Get a notification on this device when a video finishes translating."
+      title="Notifications"
+    >
+      <FieldGroup>
+        <Field orientation="horizontal">
+          <div className="flex-1">
+            <FieldLabel>Video-ready alerts</FieldLabel>
+            <FieldDescription>
+              {supported
+                ? "A push notification when subtitles are ready — even if the app is closed."
+                : "Not supported on this browser. Install the app, or use Chrome, Edge, or Firefox."}
+            </FieldDescription>
+            {error ? (
+              <FieldDescription className="font-bold text-vidura-coral">
+                {error}
+              </FieldDescription>
+            ) : null}
+          </div>
+          <Switch
+            checked={subscribed}
+            disabled={!supported || busy}
+            onCheckedChange={toggle}
+          />
+        </Field>
+      </FieldGroup>
+    </StickerPanel>
   );
 }
 

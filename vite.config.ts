@@ -102,7 +102,9 @@ export default defineConfig({
         ]
       },
       workbox: {
-        navigateFallback: "/"
+        navigateFallback: "/",
+        // Layer our push/notificationclick handlers onto the generated SW.
+        importScripts: ["/sw-push.js"]
       }
     })
   ],
