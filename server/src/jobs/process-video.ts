@@ -224,6 +224,19 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         metadata: { title: video.title, channelTitle: video.channel_title },
         targetLanguage: data.targetLanguage,
         systemPromptOverride: translationSettings.systemPrompt,
+        // Resume from lines stored by an earlier attempt of this job instead
+        // of re-translating the whole video after a crash or restart.
+        seed: existingTranslations,
+        // Persist each round as soon as it lands so a mid-run failure keeps
+        // its progress for the next attempt.
+        onRoundResults: (roundResults) =>
+          storeTranslations(
+            videoId,
+            data.targetLanguage,
+            translationModelName(),
+            segmentIdByIndex,
+            roundResults,
+          ),
         // Each finished line streams in — push a granular progress update
         // (throttled to whole-percent changes) so the client bar moves live.
         onProgress: (done) => {
