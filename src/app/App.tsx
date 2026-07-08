@@ -3643,6 +3643,13 @@ function NotificationSettingsPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
+  // iOS only allows web push from a Safari-installed Home-Screen app.
+  const isIOS = typeof navigator !== "undefined" &&
+    /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const unsupportedHint = isIOS
+    ? "On iPhone/iPad: open this site in Safari, tap Share → Add to Home Screen, then open Vidura from the icon to turn on notifications."
+    : "Not supported on this browser. Use Chrome, Edge, or Firefox (desktop or Android).";
+
   useEffect(() => {
     void isPushSubscribed().then(setSubscribed);
   }, []);
@@ -3682,7 +3689,7 @@ function NotificationSettingsPanel() {
             <FieldDescription>
               {supported
                 ? "A push notification when subtitles are ready — even if the app is closed."
-                : "Not supported on this browser. Install the app, or use Chrome, Edge, or Firefox."}
+                : unsupportedHint}
             </FieldDescription>
             {error ? (
               <FieldDescription className="font-bold text-vidura-coral">
