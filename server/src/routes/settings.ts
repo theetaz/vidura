@@ -3,9 +3,35 @@ import { sql } from "../db.ts";
 import { type AppEnv, requireUser } from "../middleware/auth.ts";
 import { fetchChatSettings } from "../lib/chat.ts";
 import type { ChatSettings } from "../lib/agents.ts";
+import {
+  fetchTranslationSettings,
+  saveTranslationSettings,
+  type TranslationSettings,
+} from "../lib/translation-settings.ts";
 
 export const settings = new Hono<AppEnv>();
 settings.use("*", requireUser);
+
+// GET /api/settings/translation
+settings.get("/translation", async (c) => {
+  return c.json(await fetchTranslationSettings(c.get("user").id));
+});
+
+// PUT /api/settings/translation
+settings.put("/translation", async (c) => {
+  const ownerId = c.get("user").id;
+  const body = await c.req.json().catch(() => null) as
+    | Partial<TranslationSettings>
+    | null;
+  if (!body) return c.json({ error: "Invalid body" }, 400);
+
+  const current = await fetchTranslationSettings(ownerId);
+  const saved = await saveTranslationSettings(ownerId, {
+    targetLanguage: body.targetLanguage ?? current.targetLanguage,
+    systemPrompt: body.systemPrompt ?? current.systemPrompt,
+  });
+  return c.json(saved);
+});
 
 // GET /api/settings/chat
 settings.get("/chat", async (c) => {

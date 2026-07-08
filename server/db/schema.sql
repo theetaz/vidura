@@ -122,14 +122,15 @@ create table if not exists public.user_chat_settings (
   updated_at timestamptz not null default now()
 );
 
--- Bearer token for the browser transcript userscript. It runs on youtube.com,
--- so the vidura session cookie isn't sent cross-site; the userscript
--- authenticates its ingest POSTs with this per-user token instead.
-create table if not exists public.ingest_token (
+-- Per-user translation preferences: default target language + an optional
+-- custom system prompt (the localization "guidance"; the code always appends
+-- the non-negotiable JSON output rules).
+create table if not exists public.user_translation_settings (
   owner_id text primary key references public."user"(id) on delete cascade,
-  token text not null unique,
+  target_language text not null default 'Sinhala',
+  system_prompt text not null default '',
   created_at timestamptz not null default now(),
-  last_used_at timestamptz
+  updated_at timestamptz not null default now()
 );
 
 create index if not exists videos_owner_status_created_idx

@@ -23,6 +23,14 @@ export const env = {
   openRouterApiKey: optional("OPENROUTER_API_KEY"),
   openRouterModel: optional("OPENROUTER_MODEL", "deepseek/deepseek-chat"),
   openRouterChatModel: optional("OPENROUTER_CHAT_MODEL"),
+  // Single-shot streaming translation. Provider selects the model/endpoint;
+  // the logic (one full-transcript call, streamed, with a completeness guard)
+  // is identical either way:
+  //   "openai"   → api.openai.com, OPENAI_MODEL, strict json_schema
+  //   "deepseek" → OpenRouter, OPENROUTER_MODEL, json_object
+  translationProvider: optional("TRANSLATION_PROVIDER", "openai"),
+  openaiApiKey: optional("OPENAI_API_KEY"),
+  openaiModel: optional("OPENAI_MODEL", "gpt-5.4-mini-2026-03-17"),
   port: Number(optional("PORT", "8787")),
   // Residential proxy for YouTube. The VPS's datacenter IP is blocked, so
   // yt-dlp (which fetches YouTube's own frame-accurate caption track) only

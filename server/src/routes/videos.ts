@@ -4,6 +4,7 @@ import { type AppEnv, requireUser } from "../middleware/auth.ts";
 import { parseYouTubeUrl } from "../lib/youtube.ts";
 import { enqueueProcessVideo } from "../jobs/boss.ts";
 import { formatTimestamp } from "../lib/chat.ts";
+import { fetchTranslationSettings } from "../lib/translation-settings.ts";
 
 export const videos = new Hono<AppEnv>();
 videos.use("*", requireUser);
@@ -91,8 +92,8 @@ videos.get("/:id/transcript", async (c) => {
   const ownerId = c.get("user").id;
   const videoId = c.req.param("id");
 
-  const [video] = await sql<Array<{ id: string }>>`
-    select id from videos where id = ${videoId} and owner_id = ${ownerId}
+  const [video] = await sql<Array<{ id: string; target_language: string }>>`
+    select id, target_language from videos where id = ${videoId} and owner_id = ${ownerId}
   `;
   if (!video) return c.json({ error: "Video not found" }, 404);
 
@@ -106,7 +107,7 @@ videos.get("/:id/transcript", async (c) => {
 
   const translations = await sql<Array<{ segment_id: string; text: string }>>`
     select segment_id, text from translated_segments
-    where video_id = ${videoId} and language_code = 'si-LK'
+    where video_id = ${videoId} and language_code = ${video.target_language}
   `;
   const sinhalaBySegment = new Map(translations.map((t) => [t.segment_id, t.text]));
 
@@ -142,7 +143,8 @@ videos.post("/", async (c) => {
     );
   }
 
-  const targetLanguage = body?.targetLanguage ?? "si-LK";
+  const targetLanguage = body?.targetLanguage ??
+    (await fetchTranslationSettings(ownerId)).targetLanguage;
   const title = body?.title?.trim().slice(0, 180) ||
     `YouTube lesson ${parsed.videoId}`;
 

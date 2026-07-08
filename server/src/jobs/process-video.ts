@@ -14,6 +14,12 @@ import {
   TRANSLATION_BATCH_SIZE,
   type TranslationContext,
 } from "../lib/translation.ts";
+import {
+  singleShotTranslationEnabled,
+  translateTranscriptOpenAI,
+  translationModelName,
+} from "../lib/openai.ts";
+import { fetchTranslationSettings } from "../lib/translation-settings.ts";
 import type { ProcessVideoJobData } from "./boss.ts";
 
 type StoredSegment = {
@@ -139,6 +145,63 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
     );
     let translatedCount = transcriptSegments.length - untranslated.length;
 
+    if (singleShotTranslationEnabled()) {
+      // One structured-output call translates the whole transcript with full
+      // video context, streamed for live progress — far faster than the
+      // batched loop.
+      await updateJob(jobId, videoId, {
+        jobStatus: "running",
+        videoStatus: "translating",
+        progress: translationProgress(translatedCount, transcriptSegments.length),
+        metadata: {
+          stage: "translating",
+          translator: translationModelName(),
+          total_segments: transcriptSegments.length,
+          translated_segments: translatedCount,
+        },
+      });
+
+      const total = transcriptSegments.length;
+      let lastProgress = -1;
+      const translationSettings = await fetchTranslationSettings(data.ownerId);
+      const results = await translateTranscriptOpenAI({
+        segments: transcriptSegments,
+        metadata: { title: video.title, channelTitle: video.channel_title },
+        targetLanguage: data.targetLanguage,
+        systemPromptOverride: translationSettings.systemPrompt,
+        // Each finished line streams in — push a granular progress update
+        // (throttled to whole-percent changes) so the client bar moves live.
+        onProgress: (done) => {
+          const progress = translationProgress(done, total);
+          if (progress === lastProgress) return;
+          lastProgress = progress;
+          void updateJob(jobId, videoId, {
+            jobStatus: "running",
+            videoStatus: "translating",
+            progress,
+            metadata: {
+              stage: "translating",
+              translator: translationModelName(),
+              total_segments: total,
+              translated_segments: done,
+              remaining_segments: total - done,
+              current_segment_text: transcriptSegments[done]?.text ?? null,
+            },
+          }).catch(() => {});
+        },
+      });
+      await storeTranslations(
+        videoId,
+        data.targetLanguage,
+        translationModelName(),
+        segmentIdByIndex,
+        results,
+      );
+      translatedCount = (await fetchExistingTranslations(
+        videoId,
+        data.targetLanguage,
+      )).size;
+    } else {
     const [jobRow] = await sql<Array<{ metadata: Record<string, unknown> }>>`
       select metadata from processing_jobs where id = ${jobId}
     `;
@@ -211,6 +274,7 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
 
       for (const t of batchTranslations) translationsByIndex.set(t.index, t.text);
       translatedCount += batchTranslations.length;
+    }
     }
 
     await updateJob(jobId, videoId, {
