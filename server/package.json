@@ -8,6 +8,8 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "worker": "bun run src/worker.ts",
+    "worker:dev": "bun run --watch src/worker.ts",
+    "dev:db": "docker compose -f docker-compose.dev.yml up -d",
     "auth:generate": "bunx @better-auth/cli generate --config src/auth.ts --output db/better-auth.sql -y",
     "db:apply": "bun run scripts/apply-schema.ts"
   },

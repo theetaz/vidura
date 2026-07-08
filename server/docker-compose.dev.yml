@@ -1,0 +1,26 @@
+# Local dev Postgres only — the API, worker, and frontend run natively with
+# hot reload. Matches server/.env's DATABASE_URL (postgres:viduradev@…:55432).
+#   docker compose -f docker-compose.dev.yml up -d
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: viduradev
+      POSTGRES_DB: vidura
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - vidura-dev-pgdata:/var/lib/postgresql/data
+      # Applied in filename order on first init (empty volume) only.
+      - ./db/better-auth.sql:/docker-entrypoint-initdb.d/00-better-auth.sql:ro
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vidura"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  vidura-dev-pgdata:
