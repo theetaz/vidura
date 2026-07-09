@@ -62,7 +62,17 @@ const MERGE_MAX_CHARS = 120; // hard break: overlay fits ~3 lines on mobile
 const MERGE_MAX_DURATION_MS = 9_000; // hard break: one line ≤ ~9s on screen
 const MERGE_MAX_BRIDGE_GAP_MS = 2_500; // never merge across real silence
 
+// Readability floor (professional guides: Netflix min ~0.83s, ~17 chars/sec
+// for non-English; we're MORE generous since viewers read a translation).
+// A line may linger into following silence to hit these — never past the
+// next line's start, so sync is untouched.
+const MIN_DISPLAY_MS = 1_500; // anything shorter flashes by unread
+const READING_CPS = 14; // chars/sec a learner comfortably reads
+const MAX_LINGER_MS = 1_200; // how far past speech a line may stay up
+
 const sentenceEndPattern = /[.!?…][)"'”’]*$/;
+// Sound-effect cues like [Music], [Applause], (laughs) — noise, not speech.
+const soundTagPattern = /^[\[(][^\])]{1,40}[\])]$/;
 
 export function parseYouTubeUrl(value: string): ParsedYouTubeUrl | null {
   const input = value.trim();
@@ -253,11 +263,15 @@ function infoToMetadata(info: any, videoId: string): VideoMetadata {
 export function consolidateSegments(
   segments: NormalizedTranscriptSegment[],
 ): NormalizedTranscriptSegment[] {
+  // Sound tags ([Music], (laughs)) aren't speech — translating and flashing
+  // them as subtitles is noise. Drop them before merging.
+  const speech = segments.filter((s) => !soundTagPattern.test(s.text.trim()));
+
   const out: NormalizedTranscriptSegment[] = [];
   let current: NormalizedTranscriptSegment | null = null;
 
-  for (let i = 0; i < segments.length; i += 1) {
-    const cue = segments[i];
+  for (let i = 0; i < speech.length; i += 1) {
+    const cue = speech[i];
     if (!cue) continue;
 
     // Close BEFORE appending a cue that would blow past a hard cap, so lines
@@ -278,7 +292,7 @@ export function consolidateSegments(
       current.endMs = cue.endMs;
     }
 
-    const next = segments[i + 1];
+    const next = speech[i + 1];
     const gapToNext = next ? next.startMs - current.endMs : Infinity;
     const sentenceDone = sentenceEndPattern.test(current.text);
     const closeSegment = gapToNext > MERGE_MAX_BRIDGE_GAP_MS ||
@@ -290,6 +304,23 @@ export function consolidateSegments(
     }
   }
   if (current) out.push(current);
+
+  // Readability pass: every line must stay on screen long enough to be read.
+  // Extend a line's end into the following silence — never past the next
+  // line's start — until it meets the display floor: at least MIN_DISPLAY_MS,
+  // and at least the time needed to read it at READING_CPS (capped by
+  // MAX_LINGER_MS past the spoken audio so silence stays mostly silent).
+  for (let i = 0; i < out.length; i += 1) {
+    const seg = out[i];
+    if (!seg) continue;
+    const nextStart = out[i + 1]?.startMs ?? Number.MAX_SAFE_INTEGER;
+    const readingMs = Math.round((seg.text.length / READING_CPS) * 1000);
+    const desiredEnd = Math.max(
+      seg.startMs + MIN_DISPLAY_MS,
+      Math.min(seg.startMs + readingMs, seg.endMs + MAX_LINGER_MS),
+    );
+    seg.endMs = Math.min(nextStart, Math.max(seg.endMs, desiredEnd));
+  }
 
   return out.map((segment, index) => ({ ...segment, index }));
 }
