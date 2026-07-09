@@ -1612,8 +1612,11 @@ function SubtitleCaption({
       Sinhala subtitles are loading...
     </span>
   ) : (
-    "Subtitles will appear when the video reaches a translated line."
+    // A silent stretch between lines is just silence — show nothing.
+    null
   );
+
+  if (content === null) return null;
 
   if (variant === "overlay") {
     return (
