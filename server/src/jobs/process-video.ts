@@ -1,6 +1,7 @@
 import { sql } from "../db.ts";
 import { env } from "../env.ts";
 import {
+  consolidateSegments,
   fetchYouTubeMetadata,
   fetchYouTubeVideoData,
   type NormalizedTranscriptSegment,
@@ -113,9 +114,12 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         where id = ${videoId}
       `;
 
-      transcriptSegments = uploaded.length > 0
-        ? uploaded
-        : ytData!.segments;
+      // Merge short caption cues into sentence-level lines — readable pacing
+      // for viewers, complete sentences for the translator. Applied uniformly
+      // to every source (captions, Gemini ASR, uploaded files).
+      transcriptSegments = consolidateSegments(
+        uploaded.length > 0 ? uploaded : ytData!.segments,
+      );
 
       if (transcriptSegments.length === 0) {
         throw new Error("No transcript segments were available for this video");

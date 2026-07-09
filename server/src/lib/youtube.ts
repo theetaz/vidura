@@ -54,6 +54,16 @@ const YTDLP_TIMEOUT_MS = 90_000;
 // so 500 truncated long videos a few minutes in; 2000 covers a normal lecture.
 const MAX_SEGMENTS = 2000;
 
+// Sentence-consolidation tuning. Raw caption cues are 2–4s phrase fragments
+// that flip too fast to read; merging them into sentence-level lines makes
+// subtitles readable AND gives the translator complete sentences to work with.
+const MERGE_MIN_CHARS = 40; // don't close on punctuation before this length
+const MERGE_MAX_CHARS = 120; // hard break: overlay fits ~3 lines on mobile
+const MERGE_MAX_DURATION_MS = 9_000; // hard break: one line ≤ ~9s on screen
+const MERGE_MAX_BRIDGE_GAP_MS = 2_500; // never merge across real silence
+
+const sentenceEndPattern = /[.!?…][)"'”’]*$/;
+
 export function parseYouTubeUrl(value: string): ParsedYouTubeUrl | null {
   const input = value.trim();
   if (!input) return null;
@@ -228,6 +238,60 @@ function infoToMetadata(info: any, videoId: string): VideoMetadata {
       ? info.thumbnail
       : fallback.thumbnailUrl,
   };
+}
+
+// Merges consecutive caption cues into sentence-level subtitle lines. Raw cues
+// are short phrase fragments (a manual track averages ~3s, ASR ~2s) that flip
+// faster than anyone can read; a line that carries a complete thought is both
+// easier to follow and translates better, since the model sees whole sentences.
+// A segment closes when:
+//   - the accumulated text ends a sentence and has reached a readable length,
+//   - a hard cap is hit (length or on-screen duration) even mid-sentence, or
+//   - the next cue starts after a real pause — silence is never bridged, so
+//     quiet stretches in the video stay subtitle-free.
+// Timing stays exact: a merged line spans first cue start → last cue end.
+export function consolidateSegments(
+  segments: NormalizedTranscriptSegment[],
+): NormalizedTranscriptSegment[] {
+  const out: NormalizedTranscriptSegment[] = [];
+  let current: NormalizedTranscriptSegment | null = null;
+
+  for (let i = 0; i < segments.length; i += 1) {
+    const cue = segments[i];
+    if (!cue) continue;
+
+    // Close BEFORE appending a cue that would blow past a hard cap, so lines
+    // stay within the caps instead of overshooting by one cue's worth.
+    if (
+      current &&
+      (current.text.length + 1 + cue.text.length > MERGE_MAX_CHARS ||
+        cue.endMs - current.startMs > MERGE_MAX_DURATION_MS)
+    ) {
+      out.push(current);
+      current = null;
+    }
+
+    if (!current) {
+      current = { ...cue };
+    } else {
+      current.text = `${current.text} ${cue.text}`;
+      current.endMs = cue.endMs;
+    }
+
+    const next = segments[i + 1];
+    const gapToNext = next ? next.startMs - current.endMs : Infinity;
+    const sentenceDone = sentenceEndPattern.test(current.text);
+    const closeSegment = gapToNext > MERGE_MAX_BRIDGE_GAP_MS ||
+      (sentenceDone && current.text.length >= MERGE_MIN_CHARS);
+
+    if (closeSegment) {
+      out.push(current);
+      current = null;
+    }
+  }
+  if (current) out.push(current);
+
+  return out.map((segment, index) => ({ ...segment, index }));
 }
 
 // Parses YouTube's json3 caption format into normalized segments.

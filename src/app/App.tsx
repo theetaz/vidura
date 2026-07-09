@@ -1629,10 +1629,10 @@ function SubtitleCaption({
           color: subtitleTextColor,
           display: "-webkit-box",
           fontSize: `clamp(14px, 3.4vw, ${subtitleSize}px)`,
-          maxHeight: "4.8em",
+          maxHeight: "7em",
           overflow: "hidden",
           WebkitBoxOrient: "vertical",
-          WebkitLineClamp: 2,
+          WebkitLineClamp: 3,
         }}
       >
         {content}

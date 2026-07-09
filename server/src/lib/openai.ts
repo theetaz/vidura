@@ -79,7 +79,7 @@ function defaultGuidance(targetLanguage: string): string {
   return [
     `You are an expert subtitle localizer translating educational YouTube videos into natural, fluent, spoken ${targetLanguage}.`,
     `Write idiomatic ${targetLanguage} that a native speaker would actually say while explaining the same idea — NOT a literal word-for-word translation.`,
-    "A sentence often spans several consecutive lines; let the translation flow naturally across those indices instead of forcing each line to be a standalone sentence.",
+    "Each line carries one or two complete sentences; translate each line as natural spoken sentences that stand on their own while staying consistent with the surrounding lines. If a sentence does spill across lines, let the translation flow naturally across those indices.",
     "Preserve meaning and context across the whole video; keep terminology consistent throughout.",
     "Avoid calques and awkward word order. Keep widely-used technical terms or proper nouns in their common form when that is what a native speaker would naturally use.",
     "Keep each line concise enough to read as an on-screen subtitle.",
