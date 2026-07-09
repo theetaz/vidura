@@ -227,7 +227,7 @@ export async function runProcessVideoJob(data: ProcessVideoJobData) {
         segments: transcriptSegments,
         metadata: { title: video.title, channelTitle: video.channel_title },
         targetLanguage: data.targetLanguage,
-        systemPromptOverride: translationSettings.systemPrompt,
+        userGuidance: translationSettings.systemPrompt,
         // Resume from lines stored by an earlier attempt of this job instead
         // of re-translating the whole video after a crash or restart.
         seed: existingTranslations,

@@ -3847,18 +3847,19 @@ function TranslationSettingsPanel() {
           />
         </Field>
         <Field>
-          <FieldLabel>Custom translation prompt</FieldLabel>
+          <FieldLabel>Additional translation instructions</FieldLabel>
           <FieldDescription>
-            Optional. Guide the translator's tone, dialect, and style. Leave
-            blank to use the built-in default. The required output format is
-            always enforced automatically.
+            Optional. Added on top of Vidura's built-in translation rules —
+            tweak tone, dialect, or terminology. The core rules (whole-video
+            context, natural phrasing, keeping technical terms in English) and
+            the output format always stay in place and can't be overridden.
           </FieldDescription>
           <Textarea
             className="min-h-32 border-2 border-foreground bg-card"
             maxLength={4000}
             onChange={(event) =>
               setDraft({ ...current, systemPrompt: event.target.value })}
-            placeholder="e.g. Translate into warm, conversational Sinhala for young learners. Prefer everyday words over formal literary terms, and keep sentences short."
+            placeholder="e.g. Prefer warm, conversational phrasing for young learners. Keep physics terms in English."
             value={current.systemPrompt}
           />
         </Field>
