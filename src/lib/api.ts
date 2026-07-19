@@ -1,9 +1,21 @@
 // HTTP client for the self-hosted Vidura API. Sends the better-auth session
 // cookie with every request (credentials: include) and speaks JSON.
 
-export const apiBaseUrl = (
-  import.meta.env.VITE_API_URL ?? "http://localhost:8787"
-).replace(/\/$/, "");
+// The app is served from two domains. Auth cookies are SameSite=Lax, so each
+// frontend must talk to an API host on its own registrable domain: the
+// prabhavalabs.com frontend uses the vidura-api.prabhavalabs.com proxy, every
+// other host uses the build-time VITE_API_URL.
+function resolveApiBaseUrl(): string {
+  if (
+    typeof window !== "undefined" &&
+    window.location.hostname.endsWith("prabhavalabs.com")
+  ) {
+    return "https://vidura-api.prabhavalabs.com";
+  }
+  return import.meta.env.VITE_API_URL ?? "http://localhost:8787";
+}
+
+export const apiBaseUrl = resolveApiBaseUrl().replace(/\/$/, "");
 
 export const isApiConfigured = Boolean(import.meta.env.VITE_API_URL) ||
   import.meta.env.DEV;

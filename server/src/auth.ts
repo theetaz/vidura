@@ -11,7 +11,7 @@ export const auth = betterAuth({
   baseURL: env.apiBaseUrl,
   secret: env.authSecret,
   // Origins allowed to start auth flows and receive redirects.
-  trustedOrigins: [env.webOrigin],
+  trustedOrigins: env.webOrigins,
   emailAndPassword: { enabled: env.emailPasswordAuth },
   socialProviders: env.googleEnabled
     ? {

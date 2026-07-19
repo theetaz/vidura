@@ -16,7 +16,12 @@ function optional(name: string, fallback = ""): string {
 export const env = {
   databaseUrl: required("DATABASE_URL"),
   apiBaseUrl: optional("API_BASE_URL", "http://localhost:8787"),
-  webOrigin: optional("WEB_ORIGIN", "http://localhost:5173"),
+  // Comma-separated list of frontend origins allowed to use this API,
+  // e.g. "https://vidura.nipuntheekshana.com,https://vidura.prabhavalabs.com".
+  webOrigins: optional("WEB_ORIGIN", "http://localhost:5173")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
   authSecret: required("BETTER_AUTH_SECRET"),
   googleClientId: optional("GOOGLE_CLIENT_ID"),
   googleClientSecret: optional("GOOGLE_CLIENT_SECRET"),
